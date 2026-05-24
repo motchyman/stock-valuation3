@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
   const res  = await fetch(`${JQ_BASE}/fins/summary?code=${code}`, { headers: H, cache: "no-store" });
   const json = await res.json();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rows: Record<string, any>[] = json?.summary ?? [];
+  const rows: Record<string, any>[] = json?.data ?? json?.summary ?? [];
   const annual = rows.filter(r => r.CurPerType === "FY");
   const latest = [...(annual.length > 0 ? annual : rows)]
     .sort((a,b) => (b.DiscDate??"").localeCompare(a.DiscDate??""))[0] ?? null;
