@@ -73,7 +73,7 @@ async function fetchFinSummary(code: string) {
     if (!res.ok) return null;
     const json = await res.json();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rows: Record<string, any>[] = json?.summary ?? [];
+    const rows: Record<string, any>[] = json?.data ?? json?.summary ?? [];
     if (rows.length === 0) return null;
     // 本決算(FY)の最新を優先
     const annual = rows.filter(r => r.CurPerType === "FY");
