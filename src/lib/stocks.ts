@@ -21,6 +21,7 @@ export interface StockData {
   shares: number;           // 発行済株式数（自己株除く、千株）
   requiredReturn: number;
   lastUpdated?: string;
+  priceDate?: string;
   error?: string;
 }
 
