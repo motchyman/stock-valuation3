@@ -17,7 +17,6 @@ const toNum = (v: unknown): number => {
   return isFinite(n) ? n : 0;
 };
 
-// レートリミット対策: 指定ms待機
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function fetchPrimeMaster(sector?: string) {
@@ -87,7 +86,6 @@ export async function GET(req: NextRequest) {
 
   if (!API_KEY) return NextResponse.json({ error: "NO API KEY" }, { status: 500 });
 
-  // 銘柄マスター取得
   let targets = await fetchPrimeMaster(sectorParam);
   if (codesParam) {
     const codes = codesParam.split(",");
@@ -98,8 +96,7 @@ export async function GET(req: NextRequest) {
 
   const results = [];
   for (const stock of sliced) {
-    // レートリミット対策: 1件ごとに300ms待機
-    await sleep(300);
+    await sleep(500);
 
     const [priceData, fins] = await Promise.all([
       fetchPrice(stock.code),
@@ -109,40 +106,30 @@ export async function GET(req: NextRequest) {
     const price         = priceData?.price ?? 0;
     const previousClose = priceData?.previousClose ?? 0;
 
-    // BPS・EPSが空文字の銘柄対応
-    // BPS/EPSが取れない場合はEq/NPから直接ROEを計算
     const bpsRaw = toNum(fins?.BPS);
     const epsRaw = toNum(fins?.EPS);
-    const npRaw  = toNum(fins?.NP);   // 当期純利益（百万円）
-    const eqRaw  = toNum(fins?.Eq);   // 純資産（百万円）
-    const taRaw  = toNum(fins?.TA);   // 総資産（百万円）
+    const npRaw  = toNum(fins?.NP);
+    const eqRaw  = toNum(fins?.Eq);
+    const taRaw  = toNum(fins?.TA);
     const cashRaw = toNum(fins?.CashEq);
 
-    // ROEを計算（BPS/EPSがあればそちらを優先、なければNP/Eqから）
-    let bps = bpsRaw;
-    let eps = epsRaw;
-    let roe = 0;
-    if (bps > 0 && eps > 0) {
-      roe = eps / bps;
-    } else if (eqRaw > 0 && npRaw !== 0) {
-      roe = npRaw / eqRaw;
-      // BPS・EPSをEq・NPから逆算（株式数推定）
-      // sharesは後でeqとbpsから計算するため、ここではroeのみ使用
-    }
+    // 株式数: ShOutFY（千株）を優先、なければBPS/Eqから推計
+    const shOutFY = toNum(fins?.ShOutFY);
+    const sharesThousand = shOutFY > 0
+      ? shOutFY
+      : bpsRaw > 0 && eqRaw > 0
+        ? (eqRaw / bpsRaw) * 1000
+        : 1;
 
-    // 株式数（千株）= 純資産(百万円) / BPS(円/株) × 1000
-    // BPSがない場合は1（理論株価の絶対値は不正確になるがROEは正確）
-    const sharesThousand = bps > 0 && eqRaw > 0
-      ? (eqRaw / bps) * 1000
-      : 1;
+    // BPS・EPSの補完
+    const bps = bpsRaw > 0 ? bpsRaw
+      : sharesThousand > 1 ? (eqRaw / sharesThousand) * 1000 : 0;
+    const eps = epsRaw > 0 ? epsRaw
+      : sharesThousand > 1 ? (npRaw / sharesThousand) * 1000 : 0;
 
-    // BPS・EPSがない場合の補完（EqとNPから推定）
-    if (bps === 0 && eqRaw > 0 && sharesThousand > 1) {
-      bps = (eqRaw / sharesThousand) * 1000;
-    }
-    if (eps === 0 && npRaw !== 0 && sharesThousand > 1) {
-      eps = (npRaw / sharesThousand) * 1000;
-    }
+    // ROE計算
+    const roe = bps > 0 && eps !== 0 ? eps / bps
+      : eqRaw > 0 && npRaw !== 0 ? npRaw / eqRaw : 0;
 
     const totalAssets = taRaw;
     const equity      = eqRaw;
