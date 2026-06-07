@@ -119,7 +119,7 @@ export async function GET(req: NextRequest) {
    const cashRaw = toNum(fins?.CashEq);
    const shOut   = toNum(fins?.ShOutFY);
 
-   const sharesThousand = shOut > 0 ? shOut
+   const sharesThousand = shOut > 0 ? shOut / 1000
      : bpsRaw > 0 && eqRaw > 0 ? (eqRaw / bpsRaw) * 1000 : 1;
 
    const bps = bpsRaw > 0 ? bpsRaw
