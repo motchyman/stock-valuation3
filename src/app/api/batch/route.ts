@@ -111,13 +111,14 @@ export async function GET(req: NextRequest) {
      fetchFins(stock.code),
    ]);
 
-   const bpsRaw  = toNum(fins?.BPS);
-   const epsRaw  = toNum(fins?.EPS);
-   const npRaw   = toNum(fins?.NP);
-   const eqRaw   = toNum(fins?.Eq);
-   const taRaw   = toNum(fins?.TA);
-   const cashRaw = toNum(fins?.CashEq);
-   const shOut   = toNum(fins?.ShOutFY);
+    const bpsRaw  = toNum(fins?.BPS);
+    const epsRaw  = toNum(fins?.EPS);
+    const npRaw   = toNum(fins?.NP)     / 1_000_000;
+    const eqRaw   = toNum(fins?.Eq)     / 1_000_000;
+    const taRaw   = toNum(fins?.TA)     / 1_000_000;
+    const cashRaw = toNum(fins?.CashEq) / 1_000_000;
+    const shOut   = toNum(fins?.ShOutFY) / 1_000;
+
 
    const sharesThousand = shOut > 0 ? shOut / 1000
      : bpsRaw > 0 && eqRaw > 0 ? (eqRaw / bpsRaw) * 1000 : 1;
