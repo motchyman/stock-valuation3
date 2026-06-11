@@ -117,7 +117,7 @@ export async function GET(req: NextRequest) {
     const eqRaw   = toNum(fins?.Eq)     / 1_000_000;
     const taRaw   = toNum(fins?.TA)     / 1_000_000;
     const cashRaw = toNum(fins?.CashEq) / 1_000_000;
-    const shOut   = toNum(fins?.ShOutFY) / 1_000;
+    const shOut = toNum(fins?.ShOutFY);
 
 
    const sharesThousand = shOut > 0 ? shOut / 1000
