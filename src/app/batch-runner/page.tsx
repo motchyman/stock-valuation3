@@ -28,16 +28,16 @@ export default function BatchRunner() {
 
     while (true) {
       try {
-        addLog(`処理中: ${from}〜${from + 4}件目...`, "info");
-        const res = await fetch(`/api/batch?from=${from}&size=5`);
+        addLog(`処理中: ${from}〜${from + 2}件目...`, "info");
+        const res = await fetch(`/api/batch?from=${from}&size=3`);
         const data = await res.json();
 
         total = data.total ?? total;
         totalSuccess += data.success ?? 0;
 
         addLog(`✅ ${from}〜: 成功${data.success} / エラー${data.errors}`, "ok");
-        setProgress(Math.round((from + 5) / total * 100));
-        setStatus(`${from + 5} / ${total} 件 (${Math.round((from+5)/total*100)}%)`);
+        setProgress(Math.round((from + 3) / total * 100));
+        setStatus(`${from + 3} / ${total} 件 (${Math.round((from+3)/total*100)}%)`);
 
         if (!data.nextUrl) {
           addLog(`🎉 完了！ 合計${totalSuccess}件保存`, "ok");
@@ -45,11 +45,12 @@ export default function BatchRunner() {
           break;
         }
         from = data.nextFrom;
-        await sleep(2100);
+        await sleep(2000);
       } catch (e) {
-  addLog(`❌ エラー: ${e}`, "err");
-  addLog("30秒待機...", "info");
-  await sleep(30000);
+        addLog(`❌ エラー: ${e}`, "err");
+        addLog("30秒待機...", "info");
+        await sleep(30000);
+      }
     }
     setRunning(false);
   };
