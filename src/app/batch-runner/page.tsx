@@ -45,7 +45,7 @@ export default function BatchRunner() {
           break;
         }
         from = data.nextFrom;
-        await sleep(2000);
+        await sleep(2100);
       } catch (e) {
         addLog(`❌ エラー: ${e}`, "err");
         await sleep(5000);
