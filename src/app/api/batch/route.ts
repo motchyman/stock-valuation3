@@ -21,15 +21,20 @@ const toNum = (v: unknown): number => {
   return isFinite(n) ? n : 0;
 };
 
+// マスターはSupabaseから読む（J-Quantsへの追加リクエストを避ける）
 async function fetchMaster() {
   const res = await fetch(
     `${SB_URL}/rest/v1/stocks?select=code,name,sector&order=code`,
-    { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` } }
+    {
+      headers: {
+        "apikey":        SB_KEY,
+        "Authorization": `Bearer ${SB_KEY}`,
+      },
+    }
   );
   if (!res.ok) throw new Error(`master(supabase) ${res.status}`);
   return await res.json();
 }
-
 
 async function fetchPrice(code: string) {
   try {
@@ -92,79 +97,102 @@ export async function GET(req: NextRequest) {
   if (!JQ_KEY) return NextResponse.json({ error: "JQUANTS_API_KEY not set" }, { status: 500 });
   if (!SB_URL) return NextResponse.json({ error: "SUPABASE_URL not set" }, { status: 500 });
 
-  const allStocks = await fetchMaster();
-  const targets   = allStocks.slice(startFrom, startFrom + batchSize);
-  const total     = allStocks.length;
+  let allStocks;
+  try {
+    allStocks = await fetchMaster();
+  } catch (e) {
+    return NextResponse.json({
+      success: 0, errors: 0, processed: 0,
+      total: 0,
+      nextFrom: startFrom,
+      nextUrl: `/api/batch?from=${startFrom}&size=${batchSize}`,
+      message: `masterエラー(リトライ): ${String(e)}`,
+    });
+  }
+
+  const targets = allStocks.slice(startFrom, startFrom + batchSize);
+  const total   = allStocks.length;
 
   const records: Record<string, unknown>[] = [];
   let successCount = 0;
   let errorCount   = 0;
 
-  for (const stock of targets) {
-    await sleep(1800);
+  try {
+    for (const stock of targets) {
+      await sleep(1800);
 
-    const [priceData, fins] = await Promise.all([
-      fetchPrice(stock.code),
-      fetchFins(stock.code),
-    ]);
+      const [priceData, fins] = await Promise.all([
+        fetchPrice(stock.code),
+        fetchFins(stock.code),
+      ]);
 
-    // J-Quantsは円単位で返す → 百万円に変換
-    const bpsRaw  = toNum(fins?.BPS);
-    const epsRaw  = toNum(fins?.EPS);
-    const npRaw   = toNum(fins?.NP)     / 1_000_000;
-    const eqRaw   = toNum(fins?.Eq)     / 1_000_000;
-    const taRaw   = toNum(fins?.TA)     / 1_000_000;
-    const cashRaw = toNum(fins?.CashEq) / 1_000_000;
-    const shOut   = toNum(fins?.ShOutFY); // 千株単位
+      // J-Quantsは円単位で返す → 百万円に変換
+      const bpsRaw  = toNum(fins?.BPS);
+      const epsRaw  = toNum(fins?.EPS);
+      const npRaw   = toNum(fins?.NP)     / 1_000_000;
+      const eqRaw   = toNum(fins?.Eq)     / 1_000_000;
+      const taRaw   = toNum(fins?.TA)     / 1_000_000;
+      const cashRaw = toNum(fins?.CashEq) / 1_000_000;
+      const shOut   = toNum(fins?.ShOutFY); // 千株単位
 
-    const sharesThousand = shOut > 0 ? shOut
-      : bpsRaw > 0 && eqRaw > 0 ? (eqRaw / bpsRaw) * 1000 : 1;
+      const sharesThousand = shOut > 0 ? shOut
+        : bpsRaw > 0 && eqRaw > 0 ? (eqRaw / bpsRaw) * 1000 : 1;
 
-    const bps = bpsRaw > 0 ? bpsRaw
-      : sharesThousand > 1 ? (eqRaw / sharesThousand) * 1000 : 0;
-    const eps = epsRaw > 0 ? epsRaw
-      : sharesThousand > 1 ? (npRaw / sharesThousand) * 1000 : 0;
-    const roe = bps > 0 && eps !== 0 ? eps / bps
-      : eqRaw > 0 && npRaw !== 0 ? npRaw / eqRaw : 0;
+      const bps = bpsRaw > 0 ? bpsRaw
+        : sharesThousand > 1 ? (eqRaw / sharesThousand) * 1000 : 0;
+      const eps = epsRaw > 0 ? epsRaw
+        : sharesThousand > 1 ? (npRaw / sharesThousand) * 1000 : 0;
+      const roe = bps > 0 && eps !== 0 ? eps / bps
+        : eqRaw > 0 && npRaw !== 0 ? npRaw / eqRaw : 0;
 
-    const target = 0.08;
-    const forecastRoe = Array.from({ length: 5 }, (_, i) => {
-      const w = i / 4;
-      return roe * (1 - w) + target * w;
-    });
+      const target = 0.08;
+      const forecastRoe = Array.from({ length: 5 }, (_, i) => {
+        const w = i / 4;
+        return roe * (1 - w) + target * w;
+      });
 
-    records.push({
-      code:                 stock.code,
-      name:                 stock.name,
-      sector:               stock.sector,
-      price:                priceData?.price ?? 0,
-      previous_close:       priceData?.previousClose ?? 0,
-      price_date:           priceData?.priceDate ?? "",
-      fin_date:             String(fins?.DiscDate ?? ""),
-      bps, eps, roe,
-      forecast_roe:         forecastRoe,
-      total_assets:         taRaw,
-      equity:               eqRaw,
-      operating_assets:     taRaw - cashRaw,
-      operating_liabilities: taRaw - eqRaw,
-      cash:                 cashRaw,
-      shares:               sharesThousand,
-      required_return:      0.05,
-      updated_at:           new Date().toISOString(),
-    });
+      records.push({
+        code:                 stock.code,
+        name:                 stock.name,
+        sector:               stock.sector,
+        price:                priceData?.price ?? 0,
+        previous_close:       priceData?.previousClose ?? 0,
+        price_date:           priceData?.priceDate ?? "",
+        fin_date:             String(fins?.DiscDate ?? ""),
+        bps, eps, roe,
+        forecast_roe:         forecastRoe,
+        total_assets:         taRaw,
+        equity:               eqRaw,
+        operating_assets:     taRaw - cashRaw,
+        operating_liabilities: taRaw - eqRaw,
+        cash:                 cashRaw,
+        shares:               sharesThousand,
+        required_return:      0.05,
+        updated_at:           new Date().toISOString(),
+      });
 
-    if (records.length >= 10) {
+      if (records.length >= 10) {
+        const ok = await upsertToSupabase(records);
+        if (ok) successCount += records.length;
+        else errorCount += records.length;
+        records.length = 0;
+      }
+    }
+
+    if (records.length > 0) {
       const ok = await upsertToSupabase(records);
       if (ok) successCount += records.length;
       else errorCount += records.length;
-      records.length = 0;
     }
-  }
-
-  if (records.length > 0) {
-    const ok = await upsertToSupabase(records);
-    if (ok) successCount += records.length;
-    else errorCount += records.length;
+  } catch (e) {
+    return NextResponse.json({
+      success: successCount, errors: errorCount + 1,
+      processed: targets.length,
+      total,
+      nextFrom: startFrom,
+      nextUrl: `/api/batch?from=${startFrom}&size=${batchSize}`,
+      message: `処理エラー(リトライ): ${String(e)}`,
+    });
   }
 
   const nextFrom = startFrom + batchSize;
