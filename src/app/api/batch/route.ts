@@ -22,17 +22,14 @@ const toNum = (v: unknown): number => {
 };
 
 async function fetchMaster() {
-  const res = await fetch(`${JQ_BASE}/equities/master`, { headers: JQ_H });
-  if (!res.ok) throw new Error(`master ${res.status}`);
-  const json = await res.json();
-  return (json?.data ?? []).filter(
-    (s: Record<string, string>) => s.Mkt === "0111"
-  ).map((s: Record<string, string>) => ({
-    code:   (s.Code ?? "").slice(0, 4),
-    name:   s.CoName ?? "",
-    sector: s.S33Nm ?? "",
-  }));
+  const res = await fetch(
+    `${SB_URL}/rest/v1/stocks?select=code,name,sector&order=code`,
+    { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` } }
+  );
+  if (!res.ok) throw new Error(`master(supabase) ${res.status}`);
+  return await res.json();
 }
+
 
 async function fetchPrice(code: string) {
   try {
