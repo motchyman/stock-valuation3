@@ -48,7 +48,7 @@ export default function BatchRunner() {
         await sleep(2100);
       } catch (e) {
         addLog(`❌ エラー: ${e}`, "err");
-        await sleep(5000);
+        await sleep(2100);
       }
     }
     setRunning(false);
