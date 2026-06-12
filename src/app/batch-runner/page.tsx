@@ -28,16 +28,16 @@ export default function BatchRunner() {
 
     while (true) {
       try {
-        addLog(`処理中: ${from}〜${from + 19}件目...`, "info");
-        const res = await fetch(`/api/batch?from=${from}&size=20`);
+        addLog(`処理中: ${from}〜${from + 4}件目...`, "info");
+        const res = await fetch(`/api/batch?from=${from}&size=5`);
         const data = await res.json();
 
         total = data.total ?? total;
         totalSuccess += data.success ?? 0;
 
         addLog(`✅ ${from}〜: 成功${data.success} / エラー${data.errors}`, "ok");
-        setProgress(Math.round((from + 20) / total * 100));
-        setStatus(`${from + 20} / ${total} 件 (${Math.round((from+50)/total*100)}%)`);
+        setProgress(Math.round((from + 5) / total * 100));
+        setStatus(`${from + 5} / ${total} 件 (${Math.round((from+5)/total*100)}%)`);
 
         if (!data.nextUrl) {
           addLog(`🎉 完了！ 合計${totalSuccess}件保存`, "ok");
