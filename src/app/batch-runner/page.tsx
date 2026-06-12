@@ -47,9 +47,9 @@ export default function BatchRunner() {
         from = data.nextFrom;
         await sleep(2100);
       } catch (e) {
-        addLog(`❌ エラー: ${e}`, "err");
-        await sleep(2100);
-      }
+  addLog(`❌ エラー: ${e}`, "err");
+  addLog("30秒待機...", "info");
+  await sleep(30000);
     }
     setRunning(false);
   };
