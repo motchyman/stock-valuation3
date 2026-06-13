@@ -42,11 +42,14 @@ async function fetchMaster() {
   return await res.json();
 }
 
+// デバッグ用: 価格エンドポイントの生レスポンス（ヘッダー含む）を返す
 async function fetchPriceRaw(code: string) {
   const url = `${JQ_BASE}/equities/bars/daily?code=${code}&from=${daysAgo(120)}&to=${daysAgo(90)}`;
   const res = await fetch(url, { headers: JQ_H });
   const text = await res.text();
-  return { url, status: res.status, body: text.slice(0, 1000) };
+  const headers: Record<string, string> = {};
+  res.headers.forEach((v, k) => { headers[k] = v; });
+  return { url, status: res.status, headers, body: text.slice(0, 1000) };
 }
 
 // fetchPriceの結果に加え、失敗時はステータスコード/エラー内容を返す（診断用）
