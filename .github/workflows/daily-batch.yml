@@ -20,7 +20,7 @@ jobs:
 
           while :; do
             echo "=== from=$FROM ==="
-            RES=$(curl -s -m 30 "$BASE/api/batch?from=$FROM&size=$SIZE")
+            RES=$(curl -s -m 30 "$BASE/api/batch?from=$FROM&size=$SIZE" || echo "")
 
             # JSONとして妥当か確認
             if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
