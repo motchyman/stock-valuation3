@@ -16,9 +16,12 @@ const toNum = (v: unknown): number => {
 const TARGET_ROE = 0.08;
 
 // ── 単位変換ルール（project-summary.md準拠） ──────────────────────
-//  TA, Eq, CashEq, NP        : 円 → ÷1,000,000 で百万円
-//  ShOutFY, TrShFY, AvgSh    : 株 → ÷1,000 で千株
-//  BPS, EPS                  : 円/株のまま使用可
+//  TA, Eq, CashEq, NP             : 円 → ÷1,000,000 で百万円
+//  ShOutFY, TrShFY, AvgSh         : 株 → ÷1,000 で千株
+//  BPS, EPS                       : 円/株のまま使用可
+//
+// ShOutFY・BPSが開示データに含まれない銘柄が存在する（例: 1332ニッスイ）。
+// この場合、AvgSh（平均株式数）から株式数を求め、そこからBPS/EPSを逆算する。
 function convertRow(s: Record<string, unknown>) {
   // 円 → 百万円
   const totalAssets = toNum(s.ta_raw)   / 1_000_000;
@@ -28,14 +31,17 @@ function convertRow(s: Record<string, unknown>) {
 
   // 株 → 千株
   const shOut = toNum(s.sh_out_raw) / 1000;
+  const avgSh = toNum(s.avg_sh_raw) / 1000;
 
   const bpsRaw = toNum(s.bps_raw);
   const epsRaw = toNum(s.eps_raw);
 
-  // 発行済株式数（千株）: ShOutFYが無い場合はEq/BPSから逆算
+  // 発行済株式数（千株）: ShOutFY → AvgSh → Eq/BPS の優先順でフォールバック
   const shares = shOut > 0
     ? shOut
-    : (bpsRaw > 0 && equity > 0 ? (equity / bpsRaw) * 1000 : 0);
+    : avgSh > 0
+      ? avgSh
+      : (bpsRaw > 0 && equity > 0 ? (equity / bpsRaw) * 1000 : 0);
 
   // 1株あたり指標: BPS/EPSが無い場合は百万円ベースの値から逆算
   const bps = bpsRaw > 0
@@ -91,7 +97,7 @@ export async function GET(req: NextRequest) {
     "price", "previous_close", "price_date", "fin_date",
     "required_return", "updated_at",
     "ta_raw", "eq_raw", "cash_raw", "np_raw",
-    "sh_out_raw", "bps_raw", "eps_raw", "nxf_eps_raw",
+    "sh_out_raw", "avg_sh_raw", "bps_raw", "eps_raw", "nxf_eps_raw",
   ].join(",");
 
   let url = `${SB_URL}/rest/v1/stocks?select=${cols}&limit=${limit}&offset=${offset}`;
