@@ -21,7 +21,6 @@ const toNum = (v: unknown): number => {
   return isFinite(n) ? n : 0;
 };
 
-// マスターはSupabaseから読む（J-Quantsへの追加リクエストを避ける）
 async function fetchMaster() {
   const res = await fetch(
     `${SB_URL}/rest/v1/stocks?select=code,name,sector&order=code`,
@@ -29,11 +28,19 @@ async function fetchMaster() {
       headers: {
         "apikey":        SB_KEY,
         "Authorization": `Bearer ${SB_KEY}`,
+        "Range":         "0-1999",
       },
     }
   );
   if (!res.ok) throw new Error(`master(supabase) ${res.status}`);
   return await res.json();
+}
+
+async function fetchPriceRaw(code: string) {
+  const url = `${JQ_BASE}/equities/bars/daily?code=${code}&from=${daysAgo(120)}&to=${daysAgo(90)}`;
+  const res = await fetch(url, { headers: JQ_H });
+  const text = await res.text();
+  return { url, status: res.status, body: text.slice(0, 1000) };
 }
 
 async function fetchPrice(code: string) {
@@ -93,9 +100,16 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const startFrom = parseInt(searchParams.get("from") ?? "0");
   const batchSize = parseInt(searchParams.get("size") ?? "50");
+  const debugCode = searchParams.get("debug");
 
   if (!JQ_KEY) return NextResponse.json({ error: "JQUANTS_API_KEY not set" }, { status: 500 });
   if (!SB_URL) return NextResponse.json({ error: "SUPABASE_URL not set" }, { status: 500 });
+
+  // デバッグモード: 生レスポンスを確認
+  if (debugCode) {
+    const raw = await fetchPriceRaw(debugCode);
+    return NextResponse.json(raw);
+  }
 
   let allStocks;
   try {
@@ -126,14 +140,13 @@ export async function GET(req: NextRequest) {
         fetchFins(stock.code),
       ]);
 
-      // J-Quantsは円単位で返す → 百万円に変換
       const bpsRaw  = toNum(fins?.BPS);
       const epsRaw  = toNum(fins?.EPS);
       const npRaw   = toNum(fins?.NP)     / 1_000_000;
       const eqRaw   = toNum(fins?.Eq)     / 1_000_000;
       const taRaw   = toNum(fins?.TA)     / 1_000_000;
       const cashRaw = toNum(fins?.CashEq) / 1_000_000;
-      const shOut   = toNum(fins?.ShOutFY); // 千株単位
+      const shOut   = toNum(fins?.ShOutFY);
 
       const sharesThousand = shOut > 0 ? shOut
         : bpsRaw > 0 && eqRaw > 0 ? (eqRaw / bpsRaw) * 1000 : 1;
