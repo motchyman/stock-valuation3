@@ -21,7 +21,9 @@ const TARGET_ROE = 0.08;
 //  BPS, EPS                       : 円/株のまま使用可
 //
 // ShOutFY・BPSが開示データに含まれない銘柄が存在する（例: 1332ニッスイ）。
-// この場合、AvgSh（平均株式数）から株式数を求め、そこからBPS/EPSを逆算する。
+// この場合、AvgSh（平均株式数）から株式数を求める。
+// またEPSは業績修正後の開示で空になり、古い期のEPSが残ることがあるため、
+// NP（修正後の最新値）と株式数から再計算した値を優先する。
 function convertRow(s: Record<string, unknown>) {
   // 円 → 百万円
   const totalAssets = toNum(s.ta_raw)   / 1_000_000;
@@ -43,13 +45,15 @@ function convertRow(s: Record<string, unknown>) {
       ? avgSh
       : (bpsRaw > 0 && equity > 0 ? (equity / bpsRaw) * 1000 : 0);
 
-  // 1株あたり指標: BPS/EPSが無い場合は百万円ベースの値から逆算
+  // 1株あたり純資産: BPSが無ければEq/sharesから逆算
   const bps = bpsRaw > 0
     ? bpsRaw
     : (shares > 1 ? (equity / shares) * 1000 : 0);
-  const eps = epsRaw > 0
-    ? epsRaw
-    : (shares > 1 ? (netProfit / shares) * 1000 : 0);
+
+  // 1株あたり純利益: NPと株式数から再計算（業績修正でEPSが空/古い値のままの開示があるため）
+  const eps = (netProfit !== 0 && shares > 1)
+    ? (netProfit / shares) * 1000
+    : epsRaw;
 
   // ROE = EPS / BPS（BPSが無ければ NP / Eq で代用）
   const roe = bps > 0 && eps !== 0
