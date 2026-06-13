@@ -21,6 +21,7 @@ const toNum = (v: unknown): number => {
   return isFinite(n) ? n : 0;
 };
 
+// マスターはSupabaseから読む（J-Quantsへの追加リクエストを避ける）
 async function fetchMaster() {
   const res = await fetch(
     `${SB_URL}/rest/v1/stocks?select=code,name,sector&order=code`,
@@ -105,7 +106,7 @@ export async function GET(req: NextRequest) {
   if (!JQ_KEY) return NextResponse.json({ error: "JQUANTS_API_KEY not set" }, { status: 500 });
   if (!SB_URL) return NextResponse.json({ error: "SUPABASE_URL not set" }, { status: 500 });
 
-    // デバッグモード: 生レスポンスを確認
+  // デバッグモード: 生レスポンスを確認
   if (debugCode) {
     const type = searchParams.get("type") ?? "price";
     if (type === "fins") {
@@ -117,7 +118,6 @@ export async function GET(req: NextRequest) {
     const raw = await fetchPriceRaw(debugCode);
     return NextResponse.json(raw);
   }
-
 
   let allStocks;
   try {
@@ -148,13 +148,14 @@ export async function GET(req: NextRequest) {
         fetchFins(stock.code),
       ]);
 
+      // J-Quantsは円単位で返す → 百万円に変換
       const bpsRaw  = toNum(fins?.BPS);
       const epsRaw  = toNum(fins?.EPS);
       const npRaw   = toNum(fins?.NP)     / 1_000_000;
       const eqRaw   = toNum(fins?.Eq)     / 1_000_000;
       const taRaw   = toNum(fins?.TA)     / 1_000_000;
       const cashRaw = toNum(fins?.CashEq) / 1_000_000;
-      const shOut   = toNum(fins?.ShOutFY);
+      const shOut   = toNum(fins?.ShOutFY) / 1000; // 株→千株に変換
 
       const sharesThousand = shOut > 0 ? shOut
         : bpsRaw > 0 && eqRaw > 0 ? (eqRaw / bpsRaw) * 1000 : 0;
