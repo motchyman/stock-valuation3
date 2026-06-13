@@ -1,11 +1,10 @@
 // src/app/api/batch/route.ts
 // 【生値保存方式】J-Quantsから取得した値は変換せずそのままraw列に保存する。
 // 単位変換・ROE等の計算はすべて financials/route.ts 側で行う。
-// src/app/api/batch/route.ts の先頭、importの直後に以下を追加してください
+import { NextRequest, NextResponse } from "next/server";
+
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-import { NextRequest, NextResponse } from "next/server";
 
 const JQ_BASE = "https://api.jquants.com/v2";
 const JQ_KEY  = process.env.JQUANTS_API_KEY ?? "";
@@ -127,6 +126,7 @@ async function fetchFins(code: string): Promise<
 }
 
 async function upsertToSupabase(records: Record<string, unknown>[]) {
+  if (records.length === 0) return true;
   const res = await fetch(`${SB_URL}/rest/v1/stocks`, {
     method: "POST",
     headers: {
@@ -138,6 +138,28 @@ async function upsertToSupabase(records: Record<string, unknown>[]) {
     body: JSON.stringify(records),
   });
   return res.ok;
+}
+
+// PostgRESTの一括upsertは「同じバッチ内の全行で同じカラム構成」が必要。
+// 価格取得/財務取得の成否によりレコードのキー集合が異なる場合があるため、
+// キー集合が同一のグループに分けてそれぞれ別々にupsertする。
+async function upsertGrouped(records: Record<string, unknown>[]): Promise<{ success: number; errors: number }> {
+  const groups = new Map<string, Record<string, unknown>[]>();
+  for (const r of records) {
+    const key = Object.keys(r).sort().join(",");
+    const arr = groups.get(key) ?? [];
+    arr.push(r);
+    groups.set(key, arr);
+  }
+
+  let success = 0;
+  let errors  = 0;
+  for (const group of groups.values()) {
+    const ok = await upsertToSupabase(group);
+    if (ok) success += group.length;
+    else errors += group.length;
+  }
+  return { success, errors };
 }
 
 export async function GET(req: NextRequest) {
@@ -252,20 +274,12 @@ export async function GET(req: NextRequest) {
       }
 
       records.push(record);
-
-      if (records.length >= 10) {
-        const ok = await upsertToSupabase(records);
-        if (ok) successCount += records.length;
-        else errorCount += records.length;
-        records.length = 0;
-      }
     }
 
-    if (records.length > 0) {
-      const ok = await upsertToSupabase(records);
-      if (ok) successCount += records.length;
-      else errorCount += records.length;
-    }
+    // キー構成が同じものごとにグループ化してupsert
+    const { success, errors } = await upsertGrouped(records);
+    successCount = success;
+    errorCount   = errors;
   } catch (e) {
     return NextResponse.json({
       success: successCount, errors: errorCount + 1,
