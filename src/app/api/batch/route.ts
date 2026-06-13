@@ -52,16 +52,23 @@ async function fetchPriceRaw(code: string) {
   return { url, status: res.status, headers, body: text.slice(0, 1000) };
 }
 
-// fetchPriceの結果に加え、失敗時はステータスコード/エラー内容を返す（診断用）
+// 429時は1回だけ短い待機後にリトライする
+async function fetchWithRetry(url: string): Promise<Response> {
+  const res = await fetch(url, { headers: JQ_H });
+  if (res.status === 429) {
+    await sleep(1500);
+    return fetch(url, { headers: JQ_H });
+  }
+  return res;
+}
+
 async function fetchPrice(code: string): Promise<
   | { ok: true; price: number; previousClose: number; priceDate: string }
   | { ok: false; reason: string }
 > {
   try {
-    const res = await fetch(
-      `${JQ_BASE}/equities/bars/daily?code=${code}&from=${daysAgo(120)}&to=${daysAgo(90)}`,
-      { headers: JQ_H }
-    );
+    const url = `${JQ_BASE}/equities/bars/daily?code=${code}&from=${daysAgo(120)}&to=${daysAgo(90)}`;
+    const res = await fetchWithRetry(url);
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
     const json = await res.json();
     const bars: Record<string, unknown>[] = json?.data ?? [];
@@ -98,10 +105,8 @@ async function fetchFins(code: string): Promise<
   | { ok: false; reason: string }
 > {
   try {
-    const res = await fetch(
-      `${JQ_BASE}/fins/summary?code=${code}`,
-      { headers: JQ_H }
-    );
+    const url = `${JQ_BASE}/fins/summary?code=${code}`;
+    const res = await fetchWithRetry(url);
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
     const json = await res.json();
     const rows: Record<string, unknown>[] = json?.data ?? [];
@@ -221,13 +226,12 @@ export async function GET(req: NextRequest) {
 
   try {
     for (const stock of targets) {
-      // J-Quants Freeプラン: 60req/分。1銘柄2リクエスト×sleep2200msで約54.5req/分に抑える。
-      await sleep(2200);
+      // 価格・財務を「同時」ではなく時間差で順に呼ぶ（同時並列だと価格APIが429になりやすいため）
+      await sleep(1100);
+      const priceResult = await fetchPrice(stock.code);
 
-      const [priceResult, finsResult] = await Promise.all([
-        fetchPrice(stock.code),
-        fetchFins(stock.code),
-      ]);
+      await sleep(1100);
+      const finsResult = await fetchFins(stock.code);
 
       if (!priceResult.ok) priceFailures.push({ code: stock.code, reason: priceResult.reason });
       if (!finsResult.ok)  finsFailures.push({ code: stock.code, reason: finsResult.reason });
@@ -307,7 +311,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     success:   successCount,
     errors:    errorCount,
-    errorBodies, // Supabaseからの実際のエラー内容（診断用）
+    errorBodies,
     processed: targets.length,
     total,
     priceFailCount: priceFailures.length,
