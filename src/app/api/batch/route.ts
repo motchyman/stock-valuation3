@@ -105,11 +105,19 @@ export async function GET(req: NextRequest) {
   if (!JQ_KEY) return NextResponse.json({ error: "JQUANTS_API_KEY not set" }, { status: 500 });
   if (!SB_URL) return NextResponse.json({ error: "SUPABASE_URL not set" }, { status: 500 });
 
-  // デバッグモード: 生レスポンスを確認
+    // デバッグモード: 生レスポンスを確認
   if (debugCode) {
+    const type = searchParams.get("type") ?? "price";
+    if (type === "fins") {
+      const url = `${JQ_BASE}/fins/summary?code=${debugCode}`;
+      const res = await fetch(url, { headers: JQ_H });
+      const text = await res.text();
+      return NextResponse.json({ url, status: res.status, body: text });
+    }
     const raw = await fetchPriceRaw(debugCode);
     return NextResponse.json(raw);
   }
+
 
   let allStocks;
   try {
