@@ -39,7 +39,7 @@ async function fetchMaster() {
 async function fetchPrice(code: string) {
   try {
     const res = await fetch(
-      `${JQ_BASE}/equities/bars/daily?code=${code}&from=${daysAgo(114)}&to=${daysAgo(84)}`,
+      `${JQ_BASE}/equities/bars/daily?code=${code}&from=${daysAgo(120)}&to=${daysAgo(90)}`,
       { headers: JQ_H }
     );
     if (!res.ok) return null;
