@@ -67,7 +67,19 @@ async function fetchPrice(code: string) {
   } catch { return null; }
 }
 
-// fins/summaryの最新FY行をそのまま返す（変換しない）
+// fins/summaryで使用するフィールド一覧
+const FIN_FIELDS = [
+  "TA", "Eq", "CashEq", "NP", "ShOutFY", "TrShFY", "AvgSh", "BPS", "EPS",
+  "Sales", "OP", "OdP", "CFO", "CFI", "CFF",
+  "DivAnn", "DivTotalAnn", "PayoutRatioAnn",
+  "NxFSales", "NxFOP", "NxFNp", "NxFEPS", "NxFDivAnn",
+] as const;
+
+// fins/summaryから財務データを取得。
+// 同じCurPerType="FY"でも、開示によってはBPS/EPS/配当のみで
+// TA/Eq/ShOutFY等が空（業績予想修正の開示など）の場合がある。
+// そのまま最新1行を使うとTA/Eq=0となり理論株価が¥0になるバグが発生するため、
+// フィールドごとに「直近の開示の中で値が入っている最初のもの」を採用してマージする。
 async function fetchFins(code: string) {
   try {
     const res = await fetch(
@@ -80,9 +92,21 @@ async function fetchFins(code: string) {
     if (rows.length === 0) return null;
     const annual = rows.filter(r => r.CurPerType === "FY");
     const pool   = annual.length > 0 ? annual : rows;
-    return [...pool].sort((a, b) =>
+    const sorted = [...pool].sort((a, b) =>
       String(b.DiscDate ?? "").localeCompare(String(a.DiscDate ?? ""))
-    )[0];
+    );
+
+    const merged: Record<string, unknown> = { DiscDate: sorted[0]?.DiscDate ?? "" };
+    for (const field of FIN_FIELDS) {
+      for (const row of sorted) {
+        const v = row[field];
+        if (v !== undefined && v !== null && v !== "") {
+          merged[field] = v;
+          break;
+        }
+      }
+    }
+    return merged;
   } catch { return null; }
 }
 
