@@ -46,25 +46,32 @@ async function fetchPriceRaw(code: string) {
   return { url, status: res.status, body: text.slice(0, 1000) };
 }
 
-async function fetchPrice(code: string) {
+// fetchPriceの結果に加え、失敗時はステータスコード/エラー内容を返す（診断用）
+async function fetchPrice(code: string): Promise<
+  | { ok: true; price: number; previousClose: number; priceDate: string }
+  | { ok: false; reason: string }
+> {
   try {
     const res = await fetch(
       `${JQ_BASE}/equities/bars/daily?code=${code}&from=${daysAgo(120)}&to=${daysAgo(90)}`,
       { headers: JQ_H }
     );
-    if (!res.ok) return null;
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
     const json = await res.json();
     const bars: Record<string, unknown>[] = json?.data ?? [];
-    if (bars.length === 0) return null;
+    if (bars.length === 0) return { ok: false, reason: "empty data" };
     const sorted = [...bars].sort((a, b) =>
       String(b.Date ?? "").localeCompare(String(a.Date ?? ""))
     );
     return {
+      ok: true,
       price:         toNum(sorted[0]?.AdjC ?? sorted[0]?.C),
       previousClose: toNum(sorted[1]?.AdjC ?? sorted[1]?.C ?? sorted[0]?.AdjC),
       priceDate:     String(sorted[0]?.Date ?? ""),
     };
-  } catch { return null; }
+  } catch (e) {
+    return { ok: false, reason: `exception: ${String(e)}` };
+  }
 }
 
 // fins/summaryで使用するフィールド一覧
@@ -80,16 +87,19 @@ const FIN_FIELDS = [
 // TA/Eq/ShOutFY等が空（業績予想修正の開示など）の場合がある。
 // そのまま最新1行を使うとTA/Eq=0となり理論株価が¥0になるバグが発生するため、
 // フィールドごとに「直近の開示の中で値が入っている最初のもの」を採用してマージする。
-async function fetchFins(code: string) {
+async function fetchFins(code: string): Promise<
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; reason: string }
+> {
   try {
     const res = await fetch(
       `${JQ_BASE}/fins/summary?code=${code}`,
       { headers: JQ_H }
     );
-    if (!res.ok) return null;
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
     const json = await res.json();
     const rows: Record<string, unknown>[] = json?.data ?? [];
-    if (rows.length === 0) return null;
+    if (rows.length === 0) return { ok: false, reason: "empty data" };
     const annual = rows.filter(r => r.CurPerType === "FY");
     const pool   = annual.length > 0 ? annual : rows;
     const sorted = [...pool].sort((a, b) =>
@@ -106,8 +116,10 @@ async function fetchFins(code: string) {
         }
       }
     }
-    return merged;
-  } catch { return null; }
+    return { ok: true, data: merged };
+  } catch (e) {
+    return { ok: false, reason: `exception: ${String(e)}` };
+  }
 }
 
 async function upsertToSupabase(records: Record<string, unknown>[]) {
@@ -166,56 +178,76 @@ export async function GET(req: NextRequest) {
   let successCount = 0;
   let errorCount   = 0;
 
+  // 診断用: 価格/財務取得の失敗内容を記録
+  const priceFailures: { code: string; reason: string }[] = [];
+  const finsFailures: { code: string; reason: string }[] = [];
+
   try {
     for (const stock of targets) {
-      await sleep(1800);
+      // J-Quants Freeプラン: 60req/分。1銘柄2リクエスト×sleep2200msで約54.5req/分に抑える。
+      await sleep(2200);
 
-      const [priceData, fins] = await Promise.all([
+      const [priceResult, finsResult] = await Promise.all([
         fetchPrice(stock.code),
         fetchFins(stock.code),
       ]);
 
-      // ── 株価・コード情報のみここで設定。財務系は全て無変換のraw列へ ──
-      records.push({
-        code:           stock.code,
-        name:           stock.name,
-        sector:         stock.sector,
+      if (!priceResult.ok) priceFailures.push({ code: stock.code, reason: priceResult.reason });
+      if (!finsResult.ok)  finsFailures.push({ code: stock.code, reason: finsResult.reason });
 
-        price:          priceData?.price ?? 0,
-        previous_close: priceData?.previousClose ?? 0,
-        price_date:     priceData?.priceDate ?? "",
-        fin_date:       String(fins?.DiscDate ?? ""),
+      if (!priceResult.ok && !finsResult.ok) {
+        // 両方取得失敗 → 既存DB値を一切変更しない
+        continue;
+      }
 
-        // ── 財務生値（J-Quantsの値をそのまま保存。単位変換はfinancials側） ──
-        ta_raw:     toNum(fins?.TA),       // 総資産（円）
-        eq_raw:     toNum(fins?.Eq),       // 純資産（円）
-        cash_raw:   toNum(fins?.CashEq),   // 現金等（円）
-        np_raw:     toNum(fins?.NP),       // 純利益（円）
-        sh_out_raw: toNum(fins?.ShOutFY),  // 発行済株式数（株）
-        tr_sh_raw:  toNum(fins?.TrShFY),   // 自己株式数（株）
-        avg_sh_raw: toNum(fins?.AvgSh),    // 平均株式数（株）
-        bps_raw:    toNum(fins?.BPS),      // 1株あたり純資産（円）
-        eps_raw:    toNum(fins?.EPS),      // 1株あたり純利益（円）
-
-        sales_raw: toNum(fins?.Sales),     // 売上高（円）
-        op_raw:    toNum(fins?.OP),        // 営業利益（円）
-        odp_raw:   toNum(fins?.OdP),       // 経常利益（円）
-        cfo_raw:   toNum(fins?.CFO),       // 営業CF（円）
-        cfi_raw:   toNum(fins?.CFI),       // 投資CF（円）
-        cff_raw:   toNum(fins?.CFF),       // 財務CF（円）
-
-        div_ann_raw:       toNum(fins?.DivAnn),        // 1株あたり年間配当（円）
-        div_total_ann_raw: toNum(fins?.DivTotalAnn),   // 配当総額（円）
-        payout_ratio_raw:  toNum(fins?.PayoutRatioAnn),// 配当率
-
-        nxf_sales_raw:   toNum(fins?.NxFSales),  // 来期予想売上高（円）
-        nxf_op_raw:      toNum(fins?.NxFOP),     // 来期予想営業利益（円）
-        nxf_np_raw:      toNum(fins?.NxFNp),     // 来期予想純利益（円）
-        nxf_eps_raw:     toNum(fins?.NxFEPS),    // 来期予想EPS（円）
-        nxf_div_ann_raw: toNum(fins?.NxFDivAnn), // 来期予想年間配当（円）
-
+      const record: Record<string, unknown> = {
+        code:   stock.code,
+        name:   stock.name,
+        sector: stock.sector,
         updated_at: new Date().toISOString(),
-      });
+      };
+
+      // ── 株価情報: 取得できた場合のみ更新（失敗時は既存値を保持） ──
+      if (priceResult.ok) {
+        record.price          = priceResult.price;
+        record.previous_close = priceResult.previousClose;
+        record.price_date     = priceResult.priceDate;
+      }
+
+      // ── 財務生値: 取得できた場合のみ更新（失敗時は既存値を保持） ──
+      if (finsResult.ok) {
+        const fins = finsResult.data;
+        record.fin_date = String(fins.DiscDate ?? "");
+
+        record.ta_raw     = toNum(fins.TA);       // 総資産（円）
+        record.eq_raw     = toNum(fins.Eq);       // 純資産（円）
+        record.cash_raw   = toNum(fins.CashEq);   // 現金等（円）
+        record.np_raw     = toNum(fins.NP);       // 純利益（円）
+        record.sh_out_raw = toNum(fins.ShOutFY);  // 発行済株式数（株）
+        record.tr_sh_raw  = toNum(fins.TrShFY);   // 自己株式数（株）
+        record.avg_sh_raw = toNum(fins.AvgSh);    // 平均株式数（株）
+        record.bps_raw    = toNum(fins.BPS);      // 1株あたり純資産（円）
+        record.eps_raw    = toNum(fins.EPS);      // 1株あたり純利益（円）
+
+        record.sales_raw = toNum(fins.Sales);     // 売上高（円）
+        record.op_raw    = toNum(fins.OP);        // 営業利益（円）
+        record.odp_raw   = toNum(fins.OdP);       // 経常利益（円）
+        record.cfo_raw   = toNum(fins.CFO);       // 営業CF（円）
+        record.cfi_raw   = toNum(fins.CFI);       // 投資CF（円）
+        record.cff_raw   = toNum(fins.CFF);       // 財務CF（円）
+
+        record.div_ann_raw       = toNum(fins.DivAnn);        // 1株あたり年間配当（円）
+        record.div_total_ann_raw = toNum(fins.DivTotalAnn);   // 配当総額（円）
+        record.payout_ratio_raw  = toNum(fins.PayoutRatioAnn);// 配当率
+
+        record.nxf_sales_raw   = toNum(fins.NxFSales);  // 来期予想売上高（円）
+        record.nxf_op_raw      = toNum(fins.NxFOP);     // 来期予想営業利益（円）
+        record.nxf_np_raw      = toNum(fins.NxFNp);     // 来期予想純利益（円）
+        record.nxf_eps_raw     = toNum(fins.NxFEPS);    // 来期予想EPS（円）
+        record.nxf_div_ann_raw = toNum(fins.NxFDivAnn); // 来期予想年間配当（円）
+      }
+
+      records.push(record);
 
       if (records.length >= 10) {
         const ok = await upsertToSupabase(records);
@@ -247,6 +279,10 @@ export async function GET(req: NextRequest) {
     errors:    errorCount,
     processed: targets.length,
     total,
+    priceFailCount: priceFailures.length,
+    finsFailCount:  finsFailures.length,
+    priceFailures,  // 失敗した銘柄コードと理由（小バッチ向けの簡易診断用）
+    finsFailures,
     nextFrom:  nextFrom < total ? nextFrom : null,
     nextUrl:   nextFrom < total ? `/api/batch?from=${nextFrom}&size=${batchSize}` : null,
     message:   nextFrom < total
