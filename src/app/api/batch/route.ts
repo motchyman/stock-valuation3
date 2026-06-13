@@ -125,8 +125,9 @@ async function fetchFins(code: string): Promise<
   }
 }
 
-async function upsertToSupabase(records: Record<string, unknown>[]) {
-  if (records.length === 0) return true;
+// Supabaseへupsert。失敗時はレスポンス本文（エラー詳細）も返す（診断用）
+async function upsertToSupabase(records: Record<string, unknown>[]): Promise<{ ok: boolean; body?: string }> {
+  if (records.length === 0) return { ok: true };
   const res = await fetch(`${SB_URL}/rest/v1/stocks`, {
     method: "POST",
     headers: {
@@ -137,13 +138,15 @@ async function upsertToSupabase(records: Record<string, unknown>[]) {
     },
     body: JSON.stringify(records),
   });
-  return res.ok;
+  if (res.ok) return { ok: true };
+  const body = await res.text();
+  return { ok: false, body: body.slice(0, 1000) };
 }
 
 // PostgRESTの一括upsertは「同じバッチ内の全行で同じカラム構成」が必要。
 // 価格取得/財務取得の成否によりレコードのキー集合が異なる場合があるため、
 // キー集合が同一のグループに分けてそれぞれ別々にupsertする。
-async function upsertGrouped(records: Record<string, unknown>[]): Promise<{ success: number; errors: number }> {
+async function upsertGrouped(records: Record<string, unknown>[]): Promise<{ success: number; errors: number; errorBodies: string[] }> {
   const groups = new Map<string, Record<string, unknown>[]>();
   for (const r of records) {
     const key = Object.keys(r).sort().join(",");
@@ -154,12 +157,16 @@ async function upsertGrouped(records: Record<string, unknown>[]): Promise<{ succ
 
   let success = 0;
   let errors  = 0;
+  const errorBodies: string[] = [];
   for (const group of groups.values()) {
-    const ok = await upsertToSupabase(group);
-    if (ok) success += group.length;
-    else errors += group.length;
+    const result = await upsertToSupabase(group);
+    if (result.ok) success += group.length;
+    else {
+      errors += group.length;
+      if (result.body) errorBodies.push(result.body);
+    }
   }
-  return { success, errors };
+  return { success, errors, errorBodies };
 }
 
 export async function GET(req: NextRequest) {
@@ -203,6 +210,7 @@ export async function GET(req: NextRequest) {
   const records: Record<string, unknown>[] = [];
   let successCount = 0;
   let errorCount   = 0;
+  let errorBodies: string[] = [];
 
   // 診断用: 価格/財務取得の失敗内容を記録
   const priceFailures: { code: string; reason: string }[] = [];
@@ -277,9 +285,10 @@ export async function GET(req: NextRequest) {
     }
 
     // キー構成が同じものごとにグループ化してupsert
-    const { success, errors } = await upsertGrouped(records);
-    successCount = success;
-    errorCount   = errors;
+    const result = await upsertGrouped(records);
+    successCount = result.success;
+    errorCount   = result.errors;
+    errorBodies  = result.errorBodies;
   } catch (e) {
     return NextResponse.json({
       success: successCount, errors: errorCount + 1,
@@ -295,11 +304,12 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     success:   successCount,
     errors:    errorCount,
+    errorBodies, // Supabaseからの実際のエラー内容（診断用）
     processed: targets.length,
     total,
     priceFailCount: priceFailures.length,
     finsFailCount:  finsFailures.length,
-    priceFailures,  // 失敗した銘柄コードと理由（小バッチ向けの簡易診断用）
+    priceFailures,
     finsFailures,
     nextFrom:  nextFrom < total ? nextFrom : null,
     nextUrl:   nextFrom < total ? `/api/batch?from=${nextFrom}&size=${batchSize}` : null,
