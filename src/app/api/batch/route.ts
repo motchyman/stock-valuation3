@@ -166,7 +166,7 @@ async function upsertGrouped(records: Record<string, unknown>[]): Promise<{ succ
   let success = 0;
   let errors  = 0;
   const errorBodies: string[] = [];
-  for (const group of groups.values()) {
+  for (const group of Array.from(groups.values())) {
     const result = await upsertToSupabase(group);
     if (result.ok) success += group.length;
     else {
