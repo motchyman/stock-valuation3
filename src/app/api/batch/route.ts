@@ -1,6 +1,10 @@
 // src/app/api/batch/route.ts
 // 【生値保存方式】J-Quantsから取得した値は変換せずそのままraw列に保存する。
 // 単位変換・ROE等の計算はすべて financials/route.ts 側で行う。
+// src/app/api/batch/route.ts の先頭、importの直後に以下を追加してください
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import { NextRequest, NextResponse } from "next/server";
 
 const JQ_BASE = "https://api.jquants.com/v2";
