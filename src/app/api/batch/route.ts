@@ -1,4 +1,6 @@
 // src/app/api/batch/route.ts
+// 【生値保存方式】J-Quantsから取得した値は変換せずそのままraw列に保存する。
+// 単位変換・ROE等の計算はすべて financials/route.ts 側で行う。
 import { NextRequest, NextResponse } from "next/server";
 
 const JQ_BASE = "https://api.jquants.com/v2";
@@ -65,6 +67,7 @@ async function fetchPrice(code: string) {
   } catch { return null; }
 }
 
+// fins/summaryの最新FY行をそのまま返す（変換しない）
 async function fetchFins(code: string) {
   try {
     const res = await fetch(
@@ -148,49 +151,46 @@ export async function GET(req: NextRequest) {
         fetchFins(stock.code),
       ]);
 
-      // J-Quantsは円単位で返す → 百万円に変換
-      const bpsRaw  = toNum(fins?.BPS);
-      const epsRaw  = toNum(fins?.EPS);
-      const npRaw   = toNum(fins?.NP)     / 1_000_000;
-      const eqRaw   = toNum(fins?.Eq)     / 1_000_000;
-      const taRaw   = toNum(fins?.TA)     / 1_000_000;
-      const cashRaw = toNum(fins?.CashEq) / 1_000_000;
-      const shOut   = toNum(fins?.ShOutFY) / 1000; // 株→千株に変換
-
-      const sharesThousand = shOut > 0 ? shOut
-        : bpsRaw > 0 && eqRaw > 0 ? (eqRaw / bpsRaw) * 1000 : 0;
-
-      const bps = bpsRaw > 0 ? bpsRaw
-        : sharesThousand > 1 ? (eqRaw / sharesThousand) * 1000 : 0;
-      const eps = epsRaw > 0 ? epsRaw
-        : sharesThousand > 1 ? (npRaw / sharesThousand) * 1000 : 0;
-      const roe = bps > 0 && eps !== 0 ? eps / bps
-        : eqRaw > 0 && npRaw !== 0 ? npRaw / eqRaw : 0;
-
-      const target = 0.08;
-      const forecastRoe = Array.from({ length: 5 }, (_, i) => {
-        const w = i / 4;
-        return roe * (1 - w) + target * w;
-      });
-
+      // ── 株価・コード情報のみここで設定。財務系は全て無変換のraw列へ ──
       records.push({
-        code:                 stock.code,
-        name:                 stock.name,
-        sector:               stock.sector,
-        price:                priceData?.price ?? 0,
-        previous_close:       priceData?.previousClose ?? 0,
-        price_date:           priceData?.priceDate ?? "",
-        fin_date:             String(fins?.DiscDate ?? ""),
-        bps, eps, roe,
-        forecast_roe:         forecastRoe,
-        total_assets:         taRaw,
-        equity:               eqRaw,
-        operating_assets:     taRaw - cashRaw,
-        operating_liabilities: taRaw - eqRaw,
-        cash:                 cashRaw,
-        shares:               sharesThousand,
-        required_return:      0.05,
-        updated_at:           new Date().toISOString(),
+        code:           stock.code,
+        name:           stock.name,
+        sector:         stock.sector,
+
+        price:          priceData?.price ?? 0,
+        previous_close: priceData?.previousClose ?? 0,
+        price_date:     priceData?.priceDate ?? "",
+        fin_date:       String(fins?.DiscDate ?? ""),
+
+        // ── 財務生値（J-Quantsの値をそのまま保存。単位変換はfinancials側） ──
+        ta_raw:     toNum(fins?.TA),       // 総資産（円）
+        eq_raw:     toNum(fins?.Eq),       // 純資産（円）
+        cash_raw:   toNum(fins?.CashEq),   // 現金等（円）
+        np_raw:     toNum(fins?.NP),       // 純利益（円）
+        sh_out_raw: toNum(fins?.ShOutFY),  // 発行済株式数（株）
+        tr_sh_raw:  toNum(fins?.TrShFY),   // 自己株式数（株）
+        avg_sh_raw: toNum(fins?.AvgSh),    // 平均株式数（株）
+        bps_raw:    toNum(fins?.BPS),      // 1株あたり純資産（円）
+        eps_raw:    toNum(fins?.EPS),      // 1株あたり純利益（円）
+
+        sales_raw: toNum(fins?.Sales),     // 売上高（円）
+        op_raw:    toNum(fins?.OP),        // 営業利益（円）
+        odp_raw:   toNum(fins?.OdP),       // 経常利益（円）
+        cfo_raw:   toNum(fins?.CFO),       // 営業CF（円）
+        cfi_raw:   toNum(fins?.CFI),       // 投資CF（円）
+        cff_raw:   toNum(fins?.CFF),       // 財務CF（円）
+
+        div_ann_raw:       toNum(fins?.DivAnn),        // 1株あたり年間配当（円）
+        div_total_ann_raw: toNum(fins?.DivTotalAnn),   // 配当総額（円）
+        payout_ratio_raw:  toNum(fins?.PayoutRatioAnn),// 配当率
+
+        nxf_sales_raw:   toNum(fins?.NxFSales),  // 来期予想売上高（円）
+        nxf_op_raw:      toNum(fins?.NxFOP),     // 来期予想営業利益（円）
+        nxf_np_raw:      toNum(fins?.NxFNp),     // 来期予想純利益（円）
+        nxf_eps_raw:     toNum(fins?.NxFEPS),    // 来期予想EPS（円）
+        nxf_div_ann_raw: toNum(fins?.NxFDivAnn), // 来期予想年間配当（円）
+
+        updated_at: new Date().toISOString(),
       });
 
       if (records.length >= 10) {
