@@ -11,34 +11,35 @@ export async function GET() {
     const res = await fetch(
       `${JQ_BASE}/equities/master`,
       {
-        headers: { "x-api-key": API_KEY },
+        headers: {
+          "x-api-key": API_KEY,
+          "Accept-Encoding": "identity", // gzip/圧縮を無効化
+        },
         cache: "no-store",
       }
     );
     if (!res.ok) return NextResponse.json({ error: `JQ ${res.status}` }, { status: res.status });
 
     const contentType = res.headers.get("content-type") ?? "";
+    const contentEncoding = res.headers.get("content-encoding") ?? "none";
 
-    // 生バイトの最初の50バイトを16進数で確認
     const buf = await res.arrayBuffer();
+
+    // CoNameが含まれる部分のバイト列を確認（500バイト目以降）
     const bytes = new Uint8Array(buf);
-    const first50hex = Array.from(bytes.slice(0, 50))
+    const mid100hex = Array.from(bytes.slice(500, 560))
       .map(b => b.toString(16).padStart(2, "0"))
       .join(" ");
 
-    // 「極洋」(CoName of 1301)のUTF-8は e6 a5 b5 e6 b4 8b
-    // EUC-JPは b6 cb cd cd
-    // Shift-JISは 8b ea 97 64
-
-    // UTF-8でデコード試行
     const textUtf8 = new TextDecoder("utf-8").decode(buf);
     const jsonUtf8 = JSON.parse(textUtf8);
     const nameUtf8 = jsonUtf8?.data?.[0]?.CoName ?? "";
 
     return NextResponse.json({
       contentType,
-      first50hex,   // 最初の50バイト(16進)
-      nameUtf8,     // UTF-8でデコードした会社名
+      contentEncoding,
+      mid100hex,  // 500〜560バイト目（日本語が含まれる範囲のはず）
+      nameUtf8,
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
