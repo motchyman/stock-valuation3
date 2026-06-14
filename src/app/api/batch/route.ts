@@ -56,7 +56,7 @@ async function fetchPriceRaw(code: string) {
 async function fetchWithRetry(url: string): Promise<Response> {
   const res = await fetch(url, { headers: JQ_H });
   if (res.status === 429) {
-    await sleep(1500);
+    await sleep(3000);
     return fetch(url, { headers: JQ_H });
   }
   return res;
@@ -87,7 +87,6 @@ async function fetchPrice(code: string): Promise<
   }
 }
 
-// fins/summaryで使用するフィールド一覧
 const FIN_FIELDS = [
   "TA", "Eq", "CashEq", "NP", "ShOutFY", "TrShFY", "AvgSh", "BPS", "EPS",
   "Sales", "OP", "OdP", "CFO", "CFI", "CFF",
@@ -95,11 +94,6 @@ const FIN_FIELDS = [
   "NxFSales", "NxFOP", "NxFNp", "NxFEPS", "NxFDivAnn",
 ] as const;
 
-// fins/summaryから財務データを取得。
-// 同じCurPerType="FY"でも、開示によってはBPS/EPS/配当のみで
-// TA/Eq/ShOutFY等が空（業績予想修正の開示など）の場合がある。
-// そのまま最新1行を使うとTA/Eq=0となり理論株価が¥0になるバグが発生するため、
-// フィールドごとに「直近の開示の中で値が入っている最初のもの」を採用してマージする。
 async function fetchFins(code: string): Promise<
   | { ok: true; data: Record<string, unknown> }
   | { ok: false; reason: string }
@@ -133,7 +127,6 @@ async function fetchFins(code: string): Promise<
   }
 }
 
-// Supabaseへupsert。失敗時はレスポンス本文（エラー詳細）も返す（診断用）
 async function upsertToSupabase(records: Record<string, unknown>[]): Promise<{ ok: boolean; body?: string }> {
   if (records.length === 0) return { ok: true };
   const res = await fetch(`${SB_URL}/rest/v1/stocks`, {
@@ -151,9 +144,6 @@ async function upsertToSupabase(records: Record<string, unknown>[]): Promise<{ o
   return { ok: false, body: body.slice(0, 1000) };
 }
 
-// PostgRESTの一括upsertは「同じバッチ内の全行で同じカラム構成」が必要。
-// 価格取得/財務取得の成否によりレコードのキー集合が異なる場合があるため、
-// キー集合が同一のグループに分けてそれぞれ別々にupsertする。
 async function upsertGrouped(records: Record<string, unknown>[]): Promise<{ success: number; errors: number; errorBodies: string[] }> {
   const groups = new Map<string, Record<string, unknown>[]>();
   for (const r of records) {
@@ -182,11 +172,14 @@ export async function GET(req: NextRequest) {
   const startFrom = parseInt(searchParams.get("from") ?? "0");
   const batchSize = parseInt(searchParams.get("size") ?? "50");
   const debugCode = searchParams.get("debug");
+  // 銘柄コードをカンマ区切りで指定して狙い撃ち再処理できるモード
+  // 例: /api/batch?codes=1982,2432,4249
+  const codesParam = searchParams.get("codes");
 
   if (!JQ_KEY) return NextResponse.json({ error: "JQUANTS_API_KEY not set" }, { status: 500 });
   if (!SB_URL) return NextResponse.json({ error: "SUPABASE_URL not set" }, { status: 500 });
 
-  // デバッグモード: 生レスポンスを確認
+  // デバッグモード
   if (debugCode) {
     const type = searchParams.get("type") ?? "price";
     if (type === "fins") {
@@ -199,34 +192,44 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(raw);
   }
 
-  let allStocks;
-  try {
-    allStocks = await fetchMaster();
-  } catch (e) {
-    return NextResponse.json({
-      success: 0, errors: 0, processed: 0,
-      total: 0,
-      nextFrom: startFrom,
-      nextUrl: `/api/batch?from=${startFrom}&size=${batchSize}`,
-      message: `masterエラー(リトライ): ${String(e)}`,
-    });
-  }
+  // 狙い撃ちモード: codesパラメータで指定した銘柄だけ処理
+  let targets: { code: string; name: string; sector: string }[];
+  let total: number;
 
-  const targets = allStocks.slice(startFrom, startFrom + batchSize);
-  const total   = allStocks.length;
+  if (codesParam) {
+    const codes = codesParam.split(",").map(c => c.trim()).filter(Boolean);
+    // Supabaseから該当銘柄のname/sectorを取得
+    const res = await fetch(
+      `${SB_URL}/rest/v1/stocks?select=code,name,sector&code=in.(${codes.map(c => `"${c}"`).join(",")})`,
+      { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` } }
+    );
+    targets = res.ok ? await res.json() : codes.map(c => ({ code: c, name: "", sector: "" }));
+    total = targets.length;
+  } else {
+    let allStocks;
+    try {
+      allStocks = await fetchMaster();
+    } catch (e) {
+      return NextResponse.json({
+        success: 0, errors: 0, processed: 0, total: 0,
+        nextFrom: startFrom,
+        nextUrl: `/api/batch?from=${startFrom}&size=${batchSize}`,
+        message: `masterエラー(リトライ): ${String(e)}`,
+      });
+    }
+    targets = allStocks.slice(startFrom, startFrom + batchSize);
+    total   = allStocks.length;
+  }
 
   const records: Record<string, unknown>[] = [];
   let successCount = 0;
   let errorCount   = 0;
   let errorBodies: string[] = [];
-
-  // 診断用: 価格/財務取得の失敗内容を記録
   const priceFailures: { code: string; reason: string }[] = [];
   const finsFailures: { code: string; reason: string }[] = [];
 
   try {
     for (const stock of targets) {
-      // 価格・財務を「同時」ではなく時間差で順に呼ぶ（同時並列だと価格APIが429になりやすいため）
       await sleep(1100);
       const priceResult = await fetchPrice(stock.code);
 
@@ -236,10 +239,7 @@ export async function GET(req: NextRequest) {
       if (!priceResult.ok) priceFailures.push({ code: stock.code, reason: priceResult.reason });
       if (!finsResult.ok)  finsFailures.push({ code: stock.code, reason: finsResult.reason });
 
-      if (!priceResult.ok && !finsResult.ok) {
-        // 両方取得失敗 → 既存DB値を一切変更しない
-        continue;
-      }
+      if (!priceResult.ok && !finsResult.ok) continue;
 
       const record: Record<string, unknown> = {
         code:   stock.code,
@@ -248,50 +248,43 @@ export async function GET(req: NextRequest) {
         updated_at: new Date().toISOString(),
       };
 
-      // ── 株価情報: 取得できた場合のみ更新（失敗時は既存値を保持） ──
       if (priceResult.ok) {
         record.price          = priceResult.price;
         record.previous_close = priceResult.previousClose;
         record.price_date     = priceResult.priceDate;
       }
 
-      // ── 財務生値: 取得できた場合のみ更新（失敗時は既存値を保持） ──
       if (finsResult.ok) {
         const fins = finsResult.data;
-        record.fin_date = String(fins.DiscDate ?? "");
-
-        record.ta_raw     = toNum(fins.TA);       // 総資産（円）
-        record.eq_raw     = toNum(fins.Eq);       // 純資産（円）
-        record.cash_raw   = toNum(fins.CashEq);   // 現金等（円）
-        record.np_raw     = toNum(fins.NP);       // 純利益（円）
-        record.sh_out_raw = toNum(fins.ShOutFY);  // 発行済株式数（株）
-        record.tr_sh_raw  = toNum(fins.TrShFY);   // 自己株式数（株）
-        record.avg_sh_raw = toNum(fins.AvgSh);    // 平均株式数（株）
-        record.bps_raw    = toNum(fins.BPS);      // 1株あたり純資産（円）
-        record.eps_raw    = toNum(fins.EPS);      // 1株あたり純利益（円）
-
-        record.sales_raw = toNum(fins.Sales);     // 売上高（円）
-        record.op_raw    = toNum(fins.OP);        // 営業利益（円）
-        record.odp_raw   = toNum(fins.OdP);       // 経常利益（円）
-        record.cfo_raw   = toNum(fins.CFO);       // 営業CF（円）
-        record.cfi_raw   = toNum(fins.CFI);       // 投資CF（円）
-        record.cff_raw   = toNum(fins.CFF);       // 財務CF（円）
-
-        record.div_ann_raw       = toNum(fins.DivAnn);        // 1株あたり年間配当（円）
-        record.div_total_ann_raw = toNum(fins.DivTotalAnn);   // 配当総額（円）
-        record.payout_ratio_raw  = toNum(fins.PayoutRatioAnn);// 配当率
-
-        record.nxf_sales_raw   = toNum(fins.NxFSales);  // 来期予想売上高（円）
-        record.nxf_op_raw      = toNum(fins.NxFOP);     // 来期予想営業利益（円）
-        record.nxf_np_raw      = toNum(fins.NxFNp);     // 来期予想純利益（円）
-        record.nxf_eps_raw     = toNum(fins.NxFEPS);    // 来期予想EPS（円）
-        record.nxf_div_ann_raw = toNum(fins.NxFDivAnn); // 来期予想年間配当（円）
+        record.fin_date        = String(fins.DiscDate ?? "");
+        record.ta_raw          = toNum(fins.TA);
+        record.eq_raw          = toNum(fins.Eq);
+        record.cash_raw        = toNum(fins.CashEq);
+        record.np_raw          = toNum(fins.NP);
+        record.sh_out_raw      = toNum(fins.ShOutFY);
+        record.tr_sh_raw       = toNum(fins.TrShFY);
+        record.avg_sh_raw      = toNum(fins.AvgSh);
+        record.bps_raw         = toNum(fins.BPS);
+        record.eps_raw         = toNum(fins.EPS);
+        record.sales_raw       = toNum(fins.Sales);
+        record.op_raw          = toNum(fins.OP);
+        record.odp_raw         = toNum(fins.OdP);
+        record.cfo_raw         = toNum(fins.CFO);
+        record.cfi_raw         = toNum(fins.CFI);
+        record.cff_raw         = toNum(fins.CFF);
+        record.div_ann_raw     = toNum(fins.DivAnn);
+        record.div_total_ann_raw = toNum(fins.DivTotalAnn);
+        record.payout_ratio_raw  = toNum(fins.PayoutRatioAnn);
+        record.nxf_sales_raw   = toNum(fins.NxFSales);
+        record.nxf_op_raw      = toNum(fins.NxFOP);
+        record.nxf_np_raw      = toNum(fins.NxFNp);
+        record.nxf_eps_raw     = toNum(fins.NxFEPS);
+        record.nxf_div_ann_raw = toNum(fins.NxFDivAnn);
       }
 
       records.push(record);
     }
 
-    // キー構成が同じものごとにグループ化してupsert
     const result = await upsertGrouped(records);
     successCount = result.success;
     errorCount   = result.errors;
@@ -299,15 +292,15 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     return NextResponse.json({
       success: successCount, errors: errorCount + 1,
-      processed: targets.length,
-      total,
+      processed: targets.length, total,
       nextFrom: startFrom,
       nextUrl: `/api/batch?from=${startFrom}&size=${batchSize}`,
       message: `処理エラー(リトライ): ${String(e)}`,
     });
   }
 
-  const nextFrom = startFrom + batchSize;
+  const nextFrom = codesParam ? null : startFrom + batchSize;
+  const hasMore  = !codesParam && nextFrom !== null && nextFrom < total;
   return NextResponse.json({
     success:   successCount,
     errors:    errorCount,
@@ -318,9 +311,9 @@ export async function GET(req: NextRequest) {
     finsFailCount:  finsFailures.length,
     priceFailures,
     finsFailures,
-    nextFrom:  nextFrom < total ? nextFrom : null,
-    nextUrl:   nextFrom < total ? `/api/batch?from=${nextFrom}&size=${batchSize}` : null,
-    message:   nextFrom < total
+    nextFrom:  hasMore ? nextFrom : null,
+    nextUrl:   hasMore ? `/api/batch?from=${nextFrom}&size=${batchSize}` : null,
+    message:   hasMore
       ? `次: /api/batch?from=${nextFrom}&size=${batchSize}`
       : "全銘柄完了！",
   });
