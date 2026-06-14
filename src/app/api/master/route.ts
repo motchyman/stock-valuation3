@@ -13,33 +13,42 @@ export async function GET() {
       {
         headers: {
           "x-api-key": API_KEY,
-          "Accept-Encoding": "identity", // gzip/圧縮を無効化
+          "Accept-Encoding": "identity",
         },
         cache: "no-store",
       }
     );
     if (!res.ok) return NextResponse.json({ error: `JQ ${res.status}` }, { status: res.status });
 
-    const contentType = res.headers.get("content-type") ?? "";
-    const contentEncoding = res.headers.get("content-encoding") ?? "none";
-
     const buf = await res.arrayBuffer();
+    const text = new TextDecoder("utf-8").decode(buf);
+    const json = JSON.parse(text);
 
-    // CoNameが含まれる部分のバイト列を確認（500バイト目以降）
-    const bytes = new Uint8Array(buf);
-    const mid100hex = Array.from(bytes.slice(500, 560))
+    const all: Record<string, string>[] = json?.data ?? [];
+    const prime = all.filter(s => s.Mkt === "0111");
+
+    // CoNameのバイト列を確認
+    const name0 = prime[0]?.CoName ?? "";
+    const name0hex = Array.from(new TextEncoder().encode(name0))
       .map(b => b.toString(16).padStart(2, "0"))
       .join(" ");
 
-    const textUtf8 = new TextDecoder("utf-8").decode(buf);
-    const jsonUtf8 = JSON.parse(textUtf8);
-    const nameUtf8 = jsonUtf8?.data?.[0]?.CoName ?? "";
+    // 英語名で正しく取れているか確認
+    const nameEn0 = prime[0]?.CoNameEn ?? "";
+
+    // 7974(任天堂)を探す
+    const nintendo = all.find(s => s.Code?.startsWith("7974"));
+    const nintendoName = nintendo?.CoName ?? "not found";
+    const nintendoNameHex = Array.from(new TextEncoder().encode(nintendoName))
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join(" ");
 
     return NextResponse.json({
-      contentType,
-      contentEncoding,
-      mid100hex,  // 500〜560バイト目（日本語が含まれる範囲のはず）
-      nameUtf8,
+      name0,        // 1件目のCoName
+      name0hex,     // そのバイト列
+      nameEn0,      // 英語名（正常なはず）
+      nintendoName, // 任天堂のCoName
+      nintendoNameHex,
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
