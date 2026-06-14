@@ -12,17 +12,7 @@ export async function GET() {
   });
   if (!res.ok) return NextResponse.json({ error: `master ${res.status}` }, { status: 500 });
 
-  // Shift-JISの可能性があるためバイナリで受け取りデコード
-  const buf = await res.arrayBuffer();
-  let text: string;
-  try {
-    text = new TextDecoder("shift-jis").decode(buf);
-    JSON.parse(text);
-  } catch {
-    text = new TextDecoder("utf-8").decode(buf);
-  }
-
-  const json = JSON.parse(text);
+  const json = await res.json();
   const stocks = (json?.data ?? [])
     .filter((s: Record<string, string>) => s.Mkt === "0111")
     .map((s: Record<string, string>) => ({
