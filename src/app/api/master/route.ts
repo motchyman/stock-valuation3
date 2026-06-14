@@ -17,18 +17,7 @@ export async function GET() {
     );
     if (!res.ok) return NextResponse.json({ error: `JQ ${res.status}` }, { status: res.status });
 
-    // Shift-JISの可能性があるためバイナリで受け取りデコード
-    const buf = await res.arrayBuffer();
-    let text: string;
-    try {
-      text = new TextDecoder("shift-jis").decode(buf);
-      // デコード結果が正常なJSONか確認（文字化けしていたらUTF-8で再試行）
-      JSON.parse(text);
-    } catch {
-      text = new TextDecoder("utf-8").decode(buf);
-    }
-
-    const json = JSON.parse(text);
+    const json = await res.json();
     const all: Record<string, string>[] = json?.data ?? [];
     const prime = all.filter(s => s.Mkt === "0111");
 
