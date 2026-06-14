@@ -17,12 +17,20 @@ export async function GET() {
     );
     if (!res.ok) return NextResponse.json({ error: `JQ ${res.status}` }, { status: res.status });
 
-    const json = await res.json();
+    // バイナリで受け取りUTF-8としてデコード
+    const buf = await res.arrayBuffer();
+    const text = new TextDecoder("utf-8").decode(buf);
+    const json = JSON.parse(text);
+
     const all: Record<string, string>[] = json?.data ?? [];
     const prime = all.filter(s => s.Mkt === "0111");
 
+    // デバッグ用: 最初の1件の生データを確認
+    const sample = prime[0] ?? null;
+
     return NextResponse.json({
       total: prime.length,
+      sample, // デバッグ用
       stocks: prime.map(s => ({
         code:   (s.Code ?? "").slice(0, 4),
         name:   s.CoName ?? "",
