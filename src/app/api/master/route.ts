@@ -12,32 +12,33 @@ export async function GET() {
       `${JQ_BASE}/equities/master`,
       {
         headers: { "x-api-key": API_KEY },
-        next: { revalidate: 86400 },
+        cache: "no-store",
       }
     );
     if (!res.ok) return NextResponse.json({ error: `JQ ${res.status}` }, { status: res.status });
 
-    // Content-Typeヘッダーを確認
     const contentType = res.headers.get("content-type") ?? "";
 
-    // 強制UTF-8でデコード
+    // 生バイトの最初の50バイトを16進数で確認
     const buf = await res.arrayBuffer();
-    const text = new TextDecoder("utf-8").decode(buf);
-    const json = JSON.parse(text);
+    const bytes = new Uint8Array(buf);
+    const first50hex = Array.from(bytes.slice(0, 50))
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join(" ");
 
-    const all: Record<string, string>[] = json?.data ?? [];
-    const prime = all.filter(s => s.Mkt === "0111");
-    const sample = prime[0] ?? null;
+    // 「極洋」(CoName of 1301)のUTF-8は e6 a5 b5 e6 b4 8b
+    // EUC-JPは b6 cb cd cd
+    // Shift-JISは 8b ea 97 64
+
+    // UTF-8でデコード試行
+    const textUtf8 = new TextDecoder("utf-8").decode(buf);
+    const jsonUtf8 = JSON.parse(textUtf8);
+    const nameUtf8 = jsonUtf8?.data?.[0]?.CoName ?? "";
 
     return NextResponse.json({
-      total: prime.length,
-      contentType, // デバッグ用: J-Quantsが返すContent-Type
-      sampleCoName: sample?.CoName ?? "",  // デバッグ用: 1件目の会社名のみ
-      stocks: prime.map(s => ({
-        code:   (s.Code ?? "").slice(0, 4),
-        name:   s.CoName ?? "",
-        sector: s.S33Nm ?? "",
-      })),
+      contentType,
+      first50hex,   // 最初の50バイト(16進)
+      nameUtf8,     // UTF-8でデコードした会社名
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
