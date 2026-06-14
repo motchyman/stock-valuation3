@@ -17,20 +17,46 @@ export async function GET() {
     );
     if (!res.ok) return NextResponse.json({ error: `JQ ${res.status}` }, { status: res.status });
 
-    // バイナリで受け取りUTF-8としてデコード
     const buf = await res.arrayBuffer();
-    const text = new TextDecoder("utf-8").decode(buf);
-    const json = JSON.parse(text);
 
+    // EUC-JPでデコードを試みる
+    let text: string;
+    let encoding = "unknown";
+    try {
+      const decoded = new TextDecoder("euc-jp").decode(buf);
+      // デコード結果にJSON的に有効な日本語が含まれるか確認
+      const parsed = JSON.parse(decoded);
+      const sample = parsed?.data?.[0]?.CoName ?? "";
+      // 文字化けパターン（繝・繧・縺など）が含まれていなければEUC-JP成功
+      if (!sample.includes("繝") && !sample.includes("繧") && !sample.includes("縺")) {
+        text = decoded;
+        encoding = "euc-jp";
+      } else {
+        throw new Error("euc-jp decode failed");
+      }
+    } catch {
+      // Shift-JISを試みる
+      try {
+        const decoded = new TextDecoder("shift-jis").decode(buf);
+        JSON.parse(decoded);
+        text = decoded;
+        encoding = "shift-jis";
+      } catch {
+        // フォールバック: UTF-8
+        text = new TextDecoder("utf-8").decode(buf);
+        encoding = "utf-8";
+      }
+    }
+
+    const json = JSON.parse(text);
     const all: Record<string, string>[] = json?.data ?? [];
     const prime = all.filter(s => s.Mkt === "0111");
-
-    // デバッグ用: 最初の1件の生データを確認
     const sample = prime[0] ?? null;
 
     return NextResponse.json({
       total: prime.length,
-      sample, // デバッグ用
+      encoding, // デバッグ用: 実際に使用したエンコーディング
+      sample,   // デバッグ用: 最初の1件
       stocks: prime.map(s => ({
         code:   (s.Code ?? "").slice(0, 4),
         name:   s.CoName ?? "",
