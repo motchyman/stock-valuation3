@@ -1,6 +1,4 @@
 // src/app/api/batch/route.ts
-// 【生値保存方式】J-Quantsから取得した値は変換せずそのままraw列に保存する。
-// 単位変換・ROE等の計算はすべて financials/route.ts 側で行う。
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +24,6 @@ const toNum = (v: unknown): number => {
   return isFinite(n) ? n : 0;
 };
 
-// マスターはSupabaseから読む（J-Quantsへの追加リクエストを避ける）
 async function fetchMaster() {
   const res = await fetch(
     `${SB_URL}/rest/v1/stocks?select=code,name,sector&order=code`,
@@ -42,7 +39,6 @@ async function fetchMaster() {
   return await res.json();
 }
 
-// デバッグ用: 価格エンドポイントの生レスポンス（ヘッダー含む）を返す
 async function fetchPriceRaw(code: string) {
   const url = `${JQ_BASE}/equities/bars/daily?code=${code}&from=${daysAgo(120)}&to=${daysAgo(90)}`;
   const res = await fetch(url, { headers: JQ_H });
@@ -52,7 +48,6 @@ async function fetchPriceRaw(code: string) {
   return { url, status: res.status, headers, body: text.slice(0, 1000) };
 }
 
-// 429時は1回だけ短い待機後にリトライする
 async function fetchWithRetry(url: string): Promise<Response> {
   const res = await fetch(url, { headers: JQ_H });
   if (res.status === 429) {
@@ -110,7 +105,6 @@ async function fetchFins(code: string): Promise<
     const sorted = [...pool].sort((a, b) =>
       String(b.DiscDate ?? "").localeCompare(String(a.DiscDate ?? ""))
     );
-
     const merged: Record<string, unknown> = { DiscDate: sorted[0]?.DiscDate ?? "" };
     for (const field of FIN_FIELDS) {
       for (const row of sorted) {
@@ -152,7 +146,6 @@ async function upsertGrouped(records: Record<string, unknown>[]): Promise<{ succ
     arr.push(r);
     groups.set(key, arr);
   }
-
   let success = 0;
   let errors  = 0;
   const errorBodies: string[] = [];
@@ -169,11 +162,10 @@ async function upsertGrouped(records: Record<string, unknown>[]): Promise<{ succ
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const startFrom = parseInt(searchParams.get("from") ?? "0");
-  const batchSize = parseInt(searchParams.get("size") ?? "50");
-  const debugCode = searchParams.get("debug");
-  // 銘柄コードをカンマ区切りで指定して狙い撃ち再処理できるモード
-  // 例: /api/batch?codes=1982,2432,4249
+  const mode       = searchParams.get("mode") ?? "both"; // "price" | "fins" | "both"
+  const startFrom  = parseInt(searchParams.get("from") ?? "0");
+  const batchSize  = parseInt(searchParams.get("size") ?? "10");
+  const debugCode  = searchParams.get("debug");
   const codesParam = searchParams.get("codes");
 
   if (!JQ_KEY) return NextResponse.json({ error: "JQUANTS_API_KEY not set" }, { status: 500 });
@@ -188,17 +180,15 @@ export async function GET(req: NextRequest) {
       const text = await res.text();
       return NextResponse.json({ url, status: res.status, body: text });
     }
-    const raw = await fetchPriceRaw(debugCode);
-    return NextResponse.json(raw);
+    return NextResponse.json(await fetchPriceRaw(debugCode));
   }
 
-  // 狙い撃ちモード: codesパラメータで指定した銘柄だけ処理
+  // 対象銘柄の決定
   let targets: { code: string; name: string; sector: string }[];
   let total: number;
 
   if (codesParam) {
     const codes = codesParam.split(",").map(c => c.trim()).filter(Boolean);
-    // Supabaseから該当銘柄のname/sectorを取得
     const res = await fetch(
       `${SB_URL}/rest/v1/stocks?select=code,name,sector&code=in.(${codes.map(c => `"${c}"`).join(",")})`,
       { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` } }
@@ -213,7 +203,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         success: 0, errors: 0, processed: 0, total: 0,
         nextFrom: startFrom,
-        nextUrl: `/api/batch?from=${startFrom}&size=${batchSize}`,
+        nextUrl: `/api/batch?mode=${mode}&from=${startFrom}&size=${batchSize}`,
         message: `masterエラー(リトライ): ${String(e)}`,
       });
     }
@@ -226,60 +216,71 @@ export async function GET(req: NextRequest) {
   let errorCount   = 0;
   let errorBodies: string[] = [];
   const priceFailures: { code: string; reason: string }[] = [];
-  const finsFailures: { code: string; reason: string }[] = [];
+  const finsFailures:  { code: string; reason: string }[] = [];
 
   try {
     for (const stock of targets) {
-      await sleep(1100);
-      const priceResult = await fetchPrice(stock.code);
+      let priceResult: Awaited<ReturnType<typeof fetchPrice>> | null = null;
+      let finsResult:  Awaited<ReturnType<typeof fetchFins>>  | null = null;
 
-      await sleep(1100);
-      const finsResult = await fetchFins(stock.code);
+      if (mode === "price" || mode === "both") {
+        await sleep(1100);
+        priceResult = await fetchPrice(stock.code);
+        if (!priceResult.ok) priceFailures.push({ code: stock.code, reason: priceResult.reason });
+      }
 
-      if (!priceResult.ok) priceFailures.push({ code: stock.code, reason: priceResult.reason });
-      if (!finsResult.ok)  finsFailures.push({ code: stock.code, reason: finsResult.reason });
+      if (mode === "fins" || mode === "both") {
+        await sleep(1100);
+        finsResult = await fetchFins(stock.code);
+        if (!finsResult.ok) finsFailures.push({ code: stock.code, reason: finsResult.reason });
+      }
 
-      if (!priceResult.ok && !finsResult.ok) continue;
+      // 両方対象なのに両方失敗 → スキップ
+      if (mode === "both" && priceResult && !priceResult.ok && finsResult && !finsResult.ok) continue;
+      // 価格のみモードで失敗 → スキップ
+      if (mode === "price" && priceResult && !priceResult.ok) continue;
+      // 財務のみモードで失敗 → スキップ
+      if (mode === "fins" && finsResult && !finsResult.ok) continue;
 
       const record: Record<string, unknown> = {
-        code:   stock.code,
-        name:   stock.name,
-        sector: stock.sector,
+        code:       stock.code,
+        name:       stock.name,
+        sector:     stock.sector,
         updated_at: new Date().toISOString(),
       };
 
-      if (priceResult.ok) {
+      if (priceResult?.ok) {
         record.price          = priceResult.price;
         record.previous_close = priceResult.previousClose;
         record.price_date     = priceResult.priceDate;
       }
 
-      if (finsResult.ok) {
+      if (finsResult?.ok) {
         const fins = finsResult.data;
-        record.fin_date        = String(fins.DiscDate ?? "");
-        record.ta_raw          = toNum(fins.TA);
-        record.eq_raw          = toNum(fins.Eq);
-        record.cash_raw        = toNum(fins.CashEq);
-        record.np_raw          = toNum(fins.NP);
-        record.sh_out_raw      = toNum(fins.ShOutFY);
-        record.tr_sh_raw       = toNum(fins.TrShFY);
-        record.avg_sh_raw      = toNum(fins.AvgSh);
-        record.bps_raw         = toNum(fins.BPS);
-        record.eps_raw         = toNum(fins.EPS);
-        record.sales_raw       = toNum(fins.Sales);
-        record.op_raw          = toNum(fins.OP);
-        record.odp_raw         = toNum(fins.OdP);
-        record.cfo_raw         = toNum(fins.CFO);
-        record.cfi_raw         = toNum(fins.CFI);
-        record.cff_raw         = toNum(fins.CFF);
-        record.div_ann_raw     = toNum(fins.DivAnn);
+        record.fin_date          = String(fins.DiscDate ?? "");
+        record.ta_raw            = toNum(fins.TA);
+        record.eq_raw            = toNum(fins.Eq);
+        record.cash_raw          = toNum(fins.CashEq);
+        record.np_raw            = toNum(fins.NP);
+        record.sh_out_raw        = toNum(fins.ShOutFY);
+        record.tr_sh_raw         = toNum(fins.TrShFY);
+        record.avg_sh_raw        = toNum(fins.AvgSh);
+        record.bps_raw           = toNum(fins.BPS);
+        record.eps_raw           = toNum(fins.EPS);
+        record.sales_raw         = toNum(fins.Sales);
+        record.op_raw            = toNum(fins.OP);
+        record.odp_raw           = toNum(fins.OdP);
+        record.cfo_raw           = toNum(fins.CFO);
+        record.cfi_raw           = toNum(fins.CFI);
+        record.cff_raw           = toNum(fins.CFF);
+        record.div_ann_raw       = toNum(fins.DivAnn);
         record.div_total_ann_raw = toNum(fins.DivTotalAnn);
         record.payout_ratio_raw  = toNum(fins.PayoutRatioAnn);
-        record.nxf_sales_raw   = toNum(fins.NxFSales);
-        record.nxf_op_raw      = toNum(fins.NxFOP);
-        record.nxf_np_raw      = toNum(fins.NxFNp);
-        record.nxf_eps_raw     = toNum(fins.NxFEPS);
-        record.nxf_div_ann_raw = toNum(fins.NxFDivAnn);
+        record.nxf_sales_raw     = toNum(fins.NxFSales);
+        record.nxf_op_raw        = toNum(fins.NxFOP);
+        record.nxf_np_raw        = toNum(fins.NxFNp);
+        record.nxf_eps_raw       = toNum(fins.NxFEPS);
+        record.nxf_div_ann_raw   = toNum(fins.NxFDivAnn);
       }
 
       records.push(record);
@@ -294,7 +295,7 @@ export async function GET(req: NextRequest) {
       success: successCount, errors: errorCount + 1,
       processed: targets.length, total,
       nextFrom: startFrom,
-      nextUrl: `/api/batch?from=${startFrom}&size=${batchSize}`,
+      nextUrl: `/api/batch?mode=${mode}&from=${startFrom}&size=${batchSize}`,
       message: `処理エラー(リトライ): ${String(e)}`,
     });
   }
@@ -312,9 +313,7 @@ export async function GET(req: NextRequest) {
     priceFailures,
     finsFailures,
     nextFrom:  hasMore ? nextFrom : null,
-    nextUrl:   hasMore ? `/api/batch?from=${nextFrom}&size=${batchSize}` : null,
-    message:   hasMore
-      ? `次: /api/batch?from=${nextFrom}&size=${batchSize}`
-      : "全銘柄完了！",
+    nextUrl:   hasMore ? `/api/batch?mode=${mode}&from=${nextFrom}&size=${batchSize}` : null,
+    message:   hasMore ? `次: /api/batch?mode=${mode}&from=${nextFrom}&size=${batchSize}` : "全銘柄完了！",
   });
 }
