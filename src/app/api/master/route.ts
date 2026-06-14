@@ -1,8 +1,4 @@
 // src/app/api/master/route.ts
-// 銘柄マスター取得（東証プライム: Mkt=0111）
-// 公式レスポンスキー: "data"
-// フィールド: Code, CoName, S33Nm（33業種名）, Mkt, MktNm
-
 import { NextResponse } from "next/server";
 
 const JQ_BASE = "https://api.jquants.com/v2";
@@ -21,11 +17,19 @@ export async function GET() {
     );
     if (!res.ok) return NextResponse.json({ error: `JQ ${res.status}` }, { status: res.status });
 
-    const json = await res.json();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const all: Record<string, any>[] = json?.data ?? [];
+    // Shift-JISの可能性があるためバイナリで受け取りデコード
+    const buf = await res.arrayBuffer();
+    let text: string;
+    try {
+      text = new TextDecoder("shift-jis").decode(buf);
+      // デコード結果が正常なJSONか確認（文字化けしていたらUTF-8で再試行）
+      JSON.parse(text);
+    } catch {
+      text = new TextDecoder("utf-8").decode(buf);
+    }
 
-    // 東証プライムのみ（Mkt = "0111"）
+    const json = JSON.parse(text);
+    const all: Record<string, string>[] = json?.data ?? [];
     const prime = all.filter(s => s.Mkt === "0111");
 
     return NextResponse.json({
