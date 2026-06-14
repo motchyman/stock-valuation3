@@ -1,10 +1,9 @@
-// src/app/page.tsx - 全銘柄対応・セクターフィルター版
+// src/app/page.tsx - Yahoo Finance リアルタイム株価対応版
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { StockData, ValuationResult, calcValuation } from "@/lib/stocks";
 
-// ── フォールバック（API失敗時）────────────────────────────────────────
 const FALLBACK: StockData[] = [
   { code:"7203",name:"トヨタ自動車",sector:"輸送用機器",price:3450,previousClose:3420,bps:4185,eps:878,roe:0.210,forecastROE:[0.210,0.180,0.150,0.120,0.100],totalAssets:97940000,equity:31330000,cash:10490000,interestBearingDebt:28650000,shares:13450000,requiredReturn:0.05},
   { code:"6758",name:"ソニーグループ",sector:"電気機器",price:2890,previousClose:2850,bps:3842,eps:671,roe:0.175,forecastROE:[0.175,0.160,0.145,0.130,0.110],totalAssets:31590000,equity:4640000,cash:3820000,interestBearingDebt:3110000,shares:1200000,requiredReturn:0.05},
@@ -29,7 +28,6 @@ const C = {
   accent: "#3b82f6", muted: "#4a6080", text: "#cbd5e1", bright: "#e2f0ff",
 };
 
-// ── 詳細パネル ────────────────────────────────────────────────────────
 function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
   s: ValuationResult; forecastYears: number; terminalG: number;
   isMobile: boolean; onClose: () => void;
@@ -53,7 +51,6 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
         <button onClick={onClose} style={{ background:C.border, border:"none", color:C.text, cursor:"pointer", borderRadius:8, width:32, height:32 }}>✕</button>
       </div>
       <div style={{ padding:"18px 18px 0" }}>
-        {/* 株価バー */}
         <div style={{ marginBottom:20 }}>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:C.muted, marginBottom:6 }}>
             <span>現在株価</span><span style={{ color:"#93c5fd" }}>理論株価</span>
@@ -72,7 +69,6 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
             </span>
           </div>
         </div>
-        {/* 構成内訳 */}
         <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>理論株価の構成（円/株）</div>
         {[
           { label:"① 正味営業資産", val:s.netOperatingAssetsPS, color:"#818cf8" },
@@ -96,7 +92,6 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
           </div>
           <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>終端価値PV: ¥{fmt(s.terminalPV)}（③のうち）</div>
         </div>
-        {/* 年次明細 */}
         <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:8 }}>残余事業利益の年次明細</div>
         <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
           <thead>
@@ -133,7 +128,6 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
   );
 }
 
-// ── メイン ────────────────────────────────────────────────────────────
 export default function Home() {
   const [stocks, setStocks]             = useState<StockData[]>(FALLBACK);
   const [allSectors, setAllSectors]     = useState<string[]>([]);
@@ -141,6 +135,7 @@ export default function Home() {
   const [searchText, setSearchText]     = useState("");
   const [loading, setLoading]           = useState(false);
   const [loadingMore, setLoadingMore]   = useState(false);
+  const [loadingPrices, setLoadingPrices] = useState(false);
   const [fetchedAt, setFetchedAt]       = useState<string | null>(null);
   const [forecastYears, setForecastYears] = useState(5);
   const [terminalG, setTerminalG]       = useState(0.02);
@@ -161,20 +156,47 @@ export default function Home() {
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // 銘柄マスターからセクター一覧を取得
   useEffect(() => {
     fetch("/api/master")
       .then(r => r.json())
       .then(data => {
         const sectorSet = new Set<string>((data.stocks ?? []).map((s: { sector: string }) => s.sector));
-        const sectors = Array.from(sectorSet).sort();
-        setAllSectors(sectors);
+        setAllSectors(Array.from(sectorSet).sort());
         setTotalCount(data.total ?? 0);
       })
       .catch(() => {});
   }, []);
 
-  // データ取得
+  // Yahoo Financeから株価を取得してstocksを更新
+  const fetchYahooPrices = useCallback(async (currentStocks: StockData[]) => {
+    setLoadingPrices(true);
+    try {
+      const CHUNK = 100;
+      let updated = [...currentStocks];
+      for (let i = 0; i < currentStocks.length; i += CHUNK) {
+        const chunk = currentStocks.slice(i, i + CHUNK);
+        const codes = chunk.map(s => s.code).join(",");
+        const res = await fetch(`/api/prices?codes=${codes}`);
+        if (!res.ok) continue;
+        const data = await res.json();
+        const prices: Record<string, { price: number; previousClose: number } | null> = data.prices ?? {};
+        updated = updated.map(s => {
+          const p = prices[s.code];
+          if (!p || !p.price) return s;
+          return { ...s, price: p.price, previousClose: p.previousClose };
+        });
+        // チャンク間に少し待機
+        if (i + CHUNK < currentStocks.length) await new Promise(r => setTimeout(r, 500));
+      }
+      setStocks(updated);
+      setFetchedAt(new Date().toISOString());
+    } catch (e) {
+      console.error("Yahoo price fetch error:", e);
+    } finally {
+      setLoadingPrices(false);
+    }
+  }, []);
+
   const fetchData = useCallback(async (sector: string, limit: number) => {
     setLoading(true);
     setApiError(false);
@@ -188,13 +210,18 @@ export default function Home() {
         .filter((s: StockData & { error?: string }) => !s.error)
         .map((s: StockData) => ({ ...s, requiredReturn: s.requiredReturn ?? 0.05 }));
       if (merged.length === 0) { setApiError(true); setStocks(FALLBACK); }
-      else { setStocks(merged); setFetchedAt(data.fetchedAt); }
+      else {
+        setStocks(merged);
+        setFetchedAt(data.fetchedAt);
+        // DBデータ取得後にYahoo Financeで株価を更新
+        fetchYahooPrices(merged);
+      }
     } catch {
       setApiError(true); setStocks(FALLBACK);
     } finally {
       setLoading(false); setLoadingMore(false);
     }
-  }, []);
+  }, [fetchYahooPrices]);
 
   useEffect(() => { fetchData(selectedSector, displayLimit); }, [selectedSector, fetchData, displayLimit]);
 
@@ -204,22 +231,17 @@ export default function Home() {
     setSelected(null);
   };
 
-  // 計算
   const results: ValuationResult[] = useMemo(
     () => stocks.map(s => calcValuation(s, forecastYears, terminalG)),
     [stocks, forecastYears, terminalG]
   );
 
-  // 検索フィルター
   const filtered = useMemo(() => {
     if (!searchText) return results;
     const q = searchText.toLowerCase();
-    return results.filter(s =>
-      s.name.toLowerCase().includes(q) || s.code.includes(q)
-    );
+    return results.filter(s => s.name.toLowerCase().includes(q) || s.code.includes(q));
   }, [results, searchText]);
 
-  // ソート
   const sorted = useMemo(() => [...filtered].sort((a, b) => {
     let va: number, vb: number;
     if (sortKey === "updown")      { va = parseFloat(a.updownPct); vb = parseFloat(b.updownPct); }
@@ -243,14 +265,13 @@ export default function Home() {
 
   const selectedResult = selected ? results.find(r => r.code === selected) ?? null : null;
 
-  // ── ヘッダー ──────────────────────────────────────────────────────
   const Header = (
     <div style={{ position:"sticky", top:0, zIndex:50, borderBottom:`1px solid ${C.border}`, background:C.surface, padding:isMobile?"12px 16px":"16px 24px", display:"flex", alignItems:"center", gap:12 }}>
       <div style={{ flex:1 }}>
         <div style={{ fontSize:9, letterSpacing:3, color:C.accent }}>TOKYO PRIME · RIM</div>
         <h1 style={{ margin:"2px 0 0", fontSize:isMobile?16:19, fontWeight:800, color:C.bright }}>理論株価アナリシス</h1>
         <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>
-          {loading ? "取得中…" : apiError ? "⚠ デモデータ" : `${totalCount}銘柄 · ${fetchedAt ? new Date(fetchedAt).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})+"更新" : ""}`}
+          {loading ? "取得中…" : apiError ? "⚠ デモデータ" : loadingPrices ? `${totalCount}銘柄 · 株価更新中…` : `${totalCount}銘柄 · ${fetchedAt ? new Date(fetchedAt).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})+"更新" : ""}`}
         </div>
       </div>
       <button onClick={() => setShowSettings(!showSettings)} style={{ background:showSettings?C.accent:C.border, border:"none", color:C.bright, cursor:"pointer", borderRadius:8, padding:"6px 12px", fontSize:12, fontWeight:600 }}>⚙ 設定</button>
@@ -258,7 +279,6 @@ export default function Home() {
     </div>
   );
 
-  // ── 設定パネル ────────────────────────────────────────────────────
   const SettingsPanel = showSettings && (
     <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"14px 16px":"14px 24px", display:"flex", flexWrap:"wrap", gap:20, alignItems:"center" }}>
       <div>
@@ -288,16 +308,13 @@ export default function Home() {
     </div>
   );
 
-  // ── セクター・検索バー ─────────────────────────────────────────────
   const FilterBar = (
     <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"10px 12px":"10px 24px" }}>
-      {/* 検索 */}
       <input
         type="text" placeholder="銘柄名・コードで検索..."
         value={searchText} onChange={e => setSearchText(e.target.value)}
         style={{ width:"100%", marginBottom:10, padding:"8px 12px", background:C.bg, border:`1px solid ${C.border}`, borderRadius:6, color:C.bright, fontSize:13, boxSizing:"border-box" as const }}
       />
-      {/* セクターフィルター */}
       <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:4 }}>
         {["すべて", ...allSectors].map(sector => (
           <button key={sector} onClick={() => handleSectorChange(sector)} style={{
@@ -312,7 +329,6 @@ export default function Home() {
     </div>
   );
 
-  // ── スマホカード ──────────────────────────────────────────────────
   const MobileList = (
     <div style={{ padding:"12px 12px 100px" }}>
       <div style={{ display:"flex", gap:6, marginBottom:12, overflowX:"auto" }}>
@@ -345,7 +361,7 @@ export default function Home() {
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
               {[
-                { label:"現在株価", value:`¥${fmt(s.price)}`, sub:`${parseFloat(changePct)>=0?"+":""}${changePct}%`, subColor:parseFloat(changePct)>=0?"#22d3a0":"#f87171" },
+                { label:"現在株価", value: s.price > 0 ? `¥${fmt(s.price)}` : loadingPrices ? "取得中…" : "¥0", sub:`${parseFloat(changePct)>=0?"+":""}${changePct}%`, subColor:parseFloat(changePct)>=0?"#22d3a0":"#f87171" },
                 { label:"理論株価", value:`¥${fmt(s.theoretical)}`, sub:"", subColor:"#93c5fd" },
                 { label:"乖離率", value:`${parseFloat(s.updownPct)>=0?"+":""}${s.updownPct}%`, sub:"", subColor:pctColor(s.updownPct) },
               ].map(item => (
@@ -376,7 +392,6 @@ export default function Home() {
           </div>
         );
       })}
-      {/* もっと見る */}
       {!loading && sorted.length >= displayLimit && (
         <button onClick={() => { setLoadingMore(true); setDisplayLimit(d => d+50); }}
           style={{ width:"100%", padding:"12px", background:C.surface, border:`1px solid ${C.border}`, color:C.accent, borderRadius:8, cursor:"pointer", fontSize:13, fontWeight:600 }}>
@@ -386,7 +401,6 @@ export default function Home() {
     </div>
   );
 
-  // ── PCテーブル ────────────────────────────────────────────────────
   const DesktopTable = (
     <div style={{ flex:1, overflowX:"auto" }}>
       <table style={{ width:"100%", borderCollapse:"collapse", minWidth:750 }}>
@@ -430,7 +444,9 @@ export default function Home() {
                   <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{s.sector}</div>
                 </td>
                 <td style={{ padding:"10px 14px", textAlign:"right" }}>
-                  <div style={{ fontWeight:700 }}>¥{fmt(s.price)}</div>
+                  <div style={{ fontWeight:700 }}>
+                    {s.price > 0 ? `¥${fmt(s.price)}` : loadingPrices ? <span style={{ color:C.muted, fontSize:11 }}>取得中…</span> : "¥0"}
+                  </div>
                   <div style={{ fontSize:10, color:parseFloat(changePct)>=0?"#22d3a0":"#f87171" }}>{parseFloat(changePct)>=0?"+":""}{changePct}%</div>
                 </td>
                 <td style={{ padding:"10px 14px", textAlign:"right", color:"#93c5fd", fontWeight:700 }}>¥{fmt(s.theoretical)}</td>
@@ -459,7 +475,6 @@ export default function Home() {
           })}
         </tbody>
       </table>
-      {/* もっと見る */}
       {!loading && sorted.length >= displayLimit && (
         <div style={{ padding:"16px", textAlign:"center" }}>
           <button onClick={() => { setLoadingMore(true); setDisplayLimit(d => d+50); }}
@@ -471,7 +486,7 @@ export default function Home() {
       <div style={{ padding:"12px 20px", borderTop:`1px solid ${C.border}`, fontSize:10, color:"#334155", lineHeight:1.8 }}>
         ※ 表示中: {sorted.length}件 / {totalCount}銘柄（東証プライム）　
         ※ 理論株価 = ①正味営業資産 + ②正味金融資産 + ③残余事業利益PV　
-        ※ 要求利回りは黄色の数字をクリックして変更可能
+        ※ 株価はYahoo Financeより取得（リアルタイム）
       </div>
     </div>
   );
