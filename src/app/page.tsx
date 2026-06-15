@@ -1,4 +1,4 @@
-// src/app/page.tsx - 日経マネー式対応版
+// src/app/page.tsx - 2方式並列表示版
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
@@ -28,15 +28,17 @@ const C = {
   accent: "#3b82f6", muted: "#4a6080", text: "#cbd5e1", bright: "#e2f0ff",
 };
 
-function DetailPanel({ s, forecastYears, terminalG, useAutoR, isMobile, onClose }: {
-  s: ValuationResult; forecastYears: number; terminalG: number;
-  useAutoR: boolean; isMobile: boolean; onClose: () => void;
+function DetailPanel({ s, sAuto, forecastYears, terminalG, isMobile, onClose }: {
+  s: ValuationResult; sAuto: ValuationResult;
+  forecastYears: number; terminalG: number;
+  isMobile: boolean; onClose: () => void;
 }) {
-  const maxP = Math.max(s.price, s.theoretical) * 1.1;
-  const pW   = (s.price / maxP) * 100;
-  const tW   = (s.theoretical / maxP) * 100;
-  const pbr  = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
-  const rUsed = useAutoR && s.autoR > 0.01 ? s.autoR : s.requiredReturn;
+  const [tab, setTab] = useState<"fixed"|"auto">("fixed");
+  const cur = tab === "fixed" ? s : sAuto;
+  const maxP = Math.max(cur.price, cur.theoretical) * 1.1;
+  const pW   = (cur.price / maxP) * 100;
+  const tW   = (cur.theoretical / maxP) * 100;
+  const pbr  = cur.bps > 0 && cur.price > 0 ? (cur.price / cur.bps).toFixed(2) : "—";
 
   return (
     <div style={isMobile
@@ -46,12 +48,34 @@ function DetailPanel({ s, forecastYears, terminalG, useAutoR, isMobile, onClose 
       <div style={{ position:"sticky", top:0, zIndex:10, background:isMobile?C.bg:C.surface, borderBottom:`1px solid ${C.border}`, padding:"14px 18px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
         <div>
           <div style={{ fontSize:10, color:C.accent, letterSpacing:3, marginBottom:2 }}>詳細分析</div>
-          <div style={{ fontSize:16, fontWeight:800, color:C.bright }}>{s.name}</div>
-          <div style={{ fontSize:11, color:C.muted }}>{s.code} · {s.sector}</div>
+          <div style={{ fontSize:16, fontWeight:800, color:C.bright }}>{cur.name}</div>
+          <div style={{ fontSize:11, color:C.muted }}>{cur.code} · {cur.sector}</div>
         </div>
         <button onClick={onClose} style={{ background:C.border, border:"none", color:C.text, cursor:"pointer", borderRadius:8, width:32, height:32 }}>✕</button>
       </div>
+
+      {/* タブ切り替え */}
+      <div style={{ display:"flex", borderBottom:`1px solid ${C.border}` }}>
+        {([["fixed","固定r方式"],["auto","日経マネー式(ROA)"]] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)} style={{
+            flex:1, padding:"10px", border:"none", cursor:"pointer",
+            background:tab===key?"#1e3a6e":"transparent",
+            color:tab===key?"#93c5fd":C.muted,
+            borderBottom:tab===key?`2px solid ${C.accent}`:"2px solid transparent",
+            fontSize:11, fontWeight:700,
+          }}>{label}</button>
+        ))}
+      </div>
+
       <div style={{ padding:"18px 18px 0" }}>
+        {/* 方式の説明 */}
+        <div style={{ padding:"8px 12px", background:C.bg, borderRadius:6, fontSize:10, color:C.muted, marginBottom:14 }}>
+          {tab === "fixed"
+            ? `r = ${(cur.requiredReturn*100).toFixed(1)}%（固定値・銘柄ごとに設定可）`
+            : `r = ${(cur.autoR*100).toFixed(1)}%（ROA ${(cur.roa*100).toFixed(1)}% × 財務レバレッジ補正）`
+          }
+        </div>
+
         {/* 株価バー */}
         <div style={{ marginBottom:20 }}>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:C.muted, marginBottom:6 }}>
@@ -59,27 +83,44 @@ function DetailPanel({ s, forecastYears, terminalG, useAutoR, isMobile, onClose 
           </div>
           <div style={{ position:"relative", height:10, background:C.border, borderRadius:5 }}>
             <div style={{ position:"absolute", left:0, width:`${pW}%`, height:"100%", background:"#1e3a6e", borderRadius:5 }} />
-            <div style={{ position:"absolute", left:`${Math.min(tW,97)}%`, top:-2, width:4, height:14, background:s.theoretical>s.price?"#22d3a0":"#f87171", borderRadius:2 }} />
+            <div style={{ position:"absolute", left:`${Math.min(tW,97)}%`, top:-2, width:4, height:14, background:cur.theoretical>cur.price?"#22d3a0":"#f87171", borderRadius:2 }} />
           </div>
           <div style={{ display:"flex", justifyContent:"space-between", marginTop:6, fontWeight:700, fontSize:15 }}>
-            <span>¥{fmt(s.price)}</span>
-            <span style={{ color:"#93c5fd" }}>¥{fmt(s.theoretical)}</span>
+            <span>¥{fmt(cur.price)}</span>
+            <span style={{ color:"#93c5fd" }}>¥{fmt(cur.theoretical)}</span>
           </div>
           <div style={{ textAlign:"center", marginTop:6 }}>
-            <span style={{ color:pctColor(s.updownPct), fontWeight:800, fontSize:22 }}>
-              {parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%
+            <span style={{ color:pctColor(cur.updownPct), fontWeight:800, fontSize:22 }}>
+              {parseFloat(cur.updownPct)>=0?"+":""}{cur.updownPct}%
             </span>
           </div>
           <div style={{ textAlign:"center", fontSize:11, color:C.muted, marginTop:4 }}>
-            PBR: <strong style={{ color:C.text }}>{pbr}倍</strong>　BPS: <strong style={{ color:C.text }}>¥{fmt(s.bps)}</strong>
+            PBR: <strong style={{ color:C.text }}>{pbr}倍</strong>　BPS: <strong style={{ color:C.text }}>¥{fmt(cur.bps)}</strong>
           </div>
+        </div>
+
+        {/* 2方式の比較 */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:20 }}>
+          {[
+            { label:"固定r方式", val:s.theoretical, pct:s.updownPct, r:s.requiredReturn, active:tab==="fixed" },
+            { label:"日経マネー式", val:sAuto.theoretical, pct:sAuto.updownPct, r:sAuto.autoR, active:tab==="auto" },
+          ].map(item => (
+            <div key={item.label} style={{ background:item.active?"#0d2040":C.bg, border:`1px solid ${item.active?C.accent:C.border}`, borderRadius:8, padding:"10px 12px" }}>
+              <div style={{ fontSize:9, color:item.active?C.accent:C.muted, marginBottom:4, fontWeight:700 }}>{item.label}</div>
+              <div style={{ fontWeight:800, fontSize:15, color:"#93c5fd" }}>¥{fmt(item.val)}</div>
+              <div style={{ fontSize:11, color:pctColor(item.pct), marginTop:2 }}>
+                {parseFloat(item.pct)>=0?"+":""}{item.pct}%
+              </div>
+              <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>r={( item.r*100).toFixed(1)}%</div>
+            </div>
+          ))}
         </div>
 
         {/* 理論株価の内訳 */}
         <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>理論株価の構成（円/株）</div>
         {[
-          { label:"BPS（簿価純資産）", val:s.bps, color:"#818cf8" },
-          { label:"残余利益PV", val:s.pvREI, color:"#fbbf24" },
+          { label:"BPS（簿価純資産）", val:cur.bps, color:"#818cf8" },
+          { label:"残余利益PV", val:cur.pvREI, color:"#fbbf24" },
         ].map(item => (
           <div key={item.label} style={{ marginBottom:12 }}>
             <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, fontSize:13 }}>
@@ -87,19 +128,19 @@ function DetailPanel({ s, forecastYears, terminalG, useAutoR, isMobile, onClose 
               <span style={{ color:item.color, fontWeight:700 }}>{item.val>=0?"+":""}{fmt(item.val)}</span>
             </div>
             <div style={{ height:5, background:C.border, borderRadius:3 }}>
-              <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(s.bps)+Math.abs(s.pvREI)||1))*100}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
+              <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(cur.bps)+Math.abs(cur.pvREI)||1))*100}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
             </div>
           </div>
         ))}
         <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:10, marginTop:4, marginBottom:20 }}>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:14, fontWeight:800 }}>
             <span style={{ color:C.muted }}>理論株価</span>
-            <span style={{ color:"#93c5fd" }}>¥{fmt(s.theoretical)}</span>
+            <span style={{ color:"#93c5fd" }}>¥{fmt(cur.theoretical)}</span>
           </div>
-          <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>終端価値PV: ¥{fmt(s.terminalPV)}（残余利益PVのうち）</div>
+          <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>終端価値PV: ¥{fmt(cur.terminalPV)}</div>
         </div>
 
-        {/* 残余利益の年次明細 */}
+        {/* 年次明細 */}
         <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:8 }}>残余利益の年次明細</div>
         <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
           <thead>
@@ -110,7 +151,7 @@ function DetailPanel({ s, forecastYears, terminalG, useAutoR, isMobile, onClose 
             </tr>
           </thead>
           <tbody>
-            {s.reiByYear.map(row => (
+            {cur.reiByYear.map(row => (
               <tr key={row.year} style={{ borderBottom:`1px solid ${C.border}22` }}>
                 <td style={{ padding:"4px 4px", textAlign:"right", color:C.muted }}>{row.year}</td>
                 <td style={{ padding:"4px 4px", textAlign:"right", color:C.muted }}>{(row.roe*100).toFixed(1)}%</td>
@@ -120,21 +161,16 @@ function DetailPanel({ s, forecastYears, terminalG, useAutoR, isMobile, onClose 
             ))}
             <tr style={{ borderTop:`1px solid ${C.border}` }}>
               <td colSpan={2} style={{ padding:"4px 4px", textAlign:"right", color:C.muted, fontSize:10 }}>終端価値</td>
-              <td colSpan={2} style={{ padding:"4px 4px", textAlign:"right", color:"#fbbf24" }}>+{fmt(s.terminalPV)}</td>
+              <td colSpan={2} style={{ padding:"4px 4px", textAlign:"right", color:"#fbbf24" }}>+{fmt(cur.terminalPV)}</td>
             </tr>
           </tbody>
         </table>
 
-        {/* 計算前提 */}
         <div style={{ margin:"18px 0", padding:12, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
           <div style={{ color:C.accent, marginBottom:4, fontSize:10 }}>計算前提</div>
-          株主資本コスト(r): <strong style={{ color:C.text }}>{(rUsed*100).toFixed(1)}%</strong>
-          {useAutoR && s.autoR > 0.01 && (
-            <span style={{ color:"#60a5fa", fontSize:10 }}> (ROAベース自動計算: ROA={( s.roa*100).toFixed(1)}%)</span>
-          )}<br/>
           終端成長率: <strong style={{ color:C.text }}>{(terminalG*100).toFixed(1)}%</strong>　
           予測期間: <strong style={{ color:C.text }}>{forecastYears}年</strong><br/>
-          データ基準日: <strong style={{ color:C.text }}>{s.priceDate ?? "—"}</strong>
+          データ基準日: <strong style={{ color:C.text }}>{cur.priceDate ?? "—"}</strong>
         </div>
       </div>
     </div>
@@ -152,11 +188,11 @@ export default function Home() {
   const [fetchedAt, setFetchedAt]       = useState<string | null>(null);
   const [forecastYears, setForecastYears] = useState(10);
   const [terminalG, setTerminalG]       = useState(0.02);
-  const [useAutoR, setUseAutoR]         = useState(false);
   const [payoutRatio, setPayoutRatio]   = useState(0.4);
   const [selected, setSelected]         = useState<string | null>(null);
   const [sortKey, setSortKey]           = useState("updown");
   const [sortAsc, setSortAsc]           = useState(false);
+  const [sortMode, setSortMode]         = useState<"fixed"|"auto">("fixed");
   const [editRR, setEditRR]             = useState<Record<string, boolean>>({});
   const [isMobile, setIsMobile]         = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -253,30 +289,57 @@ export default function Home() {
     setSearchText("");
   };
 
-  const results: ValuationResult[] = useMemo(
-    () => stocks.map(s => calcValuation(s, forecastYears, terminalG, useAutoR, payoutRatio)),
-    [stocks, forecastYears, terminalG, useAutoR, payoutRatio]
+  // 固定r方式
+  const resultsFixed: ValuationResult[] = useMemo(
+    () => stocks.map(s => calcValuation(s, forecastYears, terminalG, false, payoutRatio)),
+    [stocks, forecastYears, terminalG, payoutRatio]
+  );
+
+  // 日経マネー式(ROA自動計算)
+  const resultsAuto: ValuationResult[] = useMemo(
+    () => stocks.map(s => calcValuation(s, forecastYears, terminalG, true, payoutRatio)),
+    [stocks, forecastYears, terminalG, payoutRatio]
   );
 
   const filtered = useMemo(() => {
-    return results.filter(s => {
+    return resultsFixed.filter(s => {
       if (s.price <= 0 || s.bps <= 0) return true;
-      const pbr = s.pbr;
+      const pbr = s.price / s.bps;
       if (minPbr > 0 && pbr < minPbr) return false;
       if (maxPbr > 0 && pbr > maxPbr) return false;
       return true;
     });
-  }, [results, minPbr, maxPbr]);
+  }, [resultsFixed, minPbr, maxPbr]);
 
-  const sorted = useMemo(() => [...filtered].sort((a, b) => {
-    let va: number, vb: number;
-    if (sortKey === "updown")      { va = parseFloat(a.updownPct); vb = parseFloat(b.updownPct); }
-    else if (sortKey === "price")  { va = a.price; vb = b.price; }
-    else if (sortKey === "theory") { va = a.theoretical; vb = b.theoretical; }
-    else if (sortKey === "roe")    { va = a.roe; vb = b.roe; }
-    else                           { va = parseInt(a.code); vb = parseInt(b.code); }
-    return sortAsc ? va - vb : vb - va;
-  }), [filtered, sortKey, sortAsc]);
+  const filteredAuto = useMemo(() => {
+    return resultsAuto.filter(s => {
+      if (s.price <= 0 || s.bps <= 0) return true;
+      const pbr = s.price / s.bps;
+      if (minPbr > 0 && pbr < minPbr) return false;
+      if (maxPbr > 0 && pbr > maxPbr) return false;
+      return true;
+    });
+  }, [resultsAuto, minPbr, maxPbr]);
+
+  const sorted = useMemo(() => {
+    const base = sortMode === "fixed" ? filtered : filteredAuto;
+    return [...base].sort((a, b) => {
+      let va: number, vb: number;
+      if (sortKey === "updown")      { va = parseFloat(a.updownPct); vb = parseFloat(b.updownPct); }
+      else if (sortKey === "price")  { va = a.price; vb = b.price; }
+      else if (sortKey === "theory") { va = a.theoretical; vb = b.theoretical; }
+      else if (sortKey === "roe")    { va = a.roe; vb = b.roe; }
+      else                           { va = parseInt(a.code); vb = parseInt(b.code); }
+      return sortAsc ? va - vb : vb - va;
+    });
+  }, [filtered, filteredAuto, sortKey, sortAsc, sortMode]);
+
+  // sortedと同じ順番でauto側も並べる
+  const sortedAuto = useMemo(() => {
+    const codeOrder = sorted.map(s => s.code);
+    const autoMap = new Map(filteredAuto.map(s => [s.code, s]));
+    return codeOrder.map(code => autoMap.get(code)!).filter(Boolean);
+  }, [sorted, filteredAuto]);
 
   const handleSort = (key: string) => {
     if (sortKey === key) setSortAsc(!sortAsc);
@@ -289,7 +352,8 @@ export default function Home() {
     ));
   };
 
-  const selectedResult = selected ? results.find(r => r.code === selected) ?? null : null;
+  const selectedFixed = selected ? resultsFixed.find(r => r.code === selected) ?? null : null;
+  const selectedAuto  = selected ? resultsAuto.find(r => r.code === selected) ?? null : null;
 
   const Header = (
     <div style={{ position:"sticky", top:0, zIndex:50, borderBottom:`1px solid ${C.border}`, background:C.surface, padding:isMobile?"12px 16px":"16px 24px", display:"flex", alignItems:"center", gap:12 }}>
@@ -307,7 +371,6 @@ export default function Home() {
 
   const SettingsPanel = showSettings && (
     <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"14px 16px":"14px 24px", display:"flex", flexWrap:"wrap", gap:20, alignItems:"flex-start" }}>
-      {/* 予測期間 */}
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>予測期間</div>
         <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
@@ -323,8 +386,6 @@ export default function Home() {
           <span style={{ lineHeight:"30px", fontSize:12, color:C.muted }}>年</span>
         </div>
       </div>
-
-      {/* 終端成長率 */}
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>
           終端成長率: <strong style={{ color:"#93c5fd" }}>{(terminalG*100).toFixed(1)}%</strong>
@@ -334,8 +395,6 @@ export default function Home() {
           onChange={e => setTerminalG(parseFloat(e.target.value)/100)}
           style={{ width:120, accentColor:C.accent }} />
       </div>
-
-      {/* 配当性向（留保率） */}
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>
           配当性向: <strong style={{ color:"#93c5fd" }}>{(payoutRatio*100).toFixed(0)}%</strong>
@@ -346,60 +405,34 @@ export default function Home() {
           onChange={e => setPayoutRatio(parseFloat(e.target.value)/100)}
           style={{ width:120, accentColor:C.accent }} />
       </div>
-
-      {/* 株主資本コスト */}
       <div>
-        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>株主資本コスト(r)</div>
+        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>ソート基準</div>
         <div style={{ display:"flex", gap:6 }}>
-          <button onClick={() => setUseAutoR(false)} style={{
-            padding:"5px 12px", borderRadius:6, border:"1px solid",
-            borderColor:!useAutoR?C.accent:C.border,
-            background:!useAutoR?"#1e3a6e":"transparent",
-            color:!useAutoR?"#93c5fd":C.muted,
-            cursor:"pointer", fontSize:11, fontWeight:600,
-          }}>固定値(銘柄別)</button>
-          <button onClick={() => setUseAutoR(true)} style={{
-            padding:"5px 12px", borderRadius:6, border:"1px solid",
-            borderColor:useAutoR?C.accent:C.border,
-            background:useAutoR?"#1e3a6e":"transparent",
-            color:useAutoR?"#93c5fd":C.muted,
-            cursor:"pointer", fontSize:11, fontWeight:600,
-          }}>ROA自動計算</button>
+          {([["fixed","固定r方式"],["auto","日経マネー式"]] as const).map(([key,label]) => (
+            <button key={key} onClick={() => setSortMode(key)} style={{
+              padding:"5px 10px", borderRadius:6, border:"1px solid",
+              borderColor:sortMode===key?C.accent:C.border,
+              background:sortMode===key?"#1e3a6e":"transparent",
+              color:sortMode===key?"#93c5fd":C.muted,
+              cursor:"pointer", fontSize:11, fontWeight:600,
+            }}>{label}</button>
+          ))}
         </div>
-        {useAutoR && (
-          <div style={{ fontSize:10, color:"#60a5fa", marginTop:4 }}>
-            r = ROA × 財務レバレッジ補正（日経マネー式）
-          </div>
-        )}
       </div>
-
-      {/* PBRフィルター */}
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>PBRフィルター（0=無効）</div>
-        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-          <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
-            <span style={{ fontSize:9, color:C.muted }}>最小</span>
-            <input type="number" min={0} max={20} step={0.1}
-              value={minPbr || ""}
-              placeholder="0"
-              onChange={e => setMinPbr(parseFloat(e.target.value) || 0)}
-              style={{ width:56, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }}
-            />
-          </div>
-          <span style={{ color:C.muted, fontSize:12, marginTop:14 }}>〜</span>
-          <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
-            <span style={{ fontSize:9, color:C.muted }}>最大</span>
-            <input type="number" min={0} max={20} step={0.1}
-              value={maxPbr || ""}
-              placeholder="0"
-              onChange={e => setMaxPbr(parseFloat(e.target.value) || 0)}
-              style={{ width:56, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }}
-            />
-          </div>
-          <span style={{ color:C.muted, fontSize:12, marginTop:14 }}>倍</span>
-          {(minPbr > 0 || maxPbr > 0) && (
-            <button onClick={() => { setMinPbr(0); setMaxPbr(0); }}
-              style={{ background:C.border, border:"none", color:C.muted, cursor:"pointer", borderRadius:6, padding:"4px 8px", fontSize:11, marginTop:14 }}>
+        <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+          <input type="number" min={0} max={20} step={0.1} value={minPbr||""} placeholder="最小"
+            onChange={e => setMinPbr(parseFloat(e.target.value)||0)}
+            style={{ width:56, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }} />
+          <span style={{ color:C.muted }}>〜</span>
+          <input type="number" min={0} max={20} step={0.1} value={maxPbr||""} placeholder="最大"
+            onChange={e => setMaxPbr(parseFloat(e.target.value)||0)}
+            style={{ width:56, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }} />
+          <span style={{ color:C.muted, fontSize:12 }}>倍</span>
+          {(minPbr>0||maxPbr>0) && (
+            <button onClick={() => {setMinPbr(0);setMaxPbr(0);}}
+              style={{ background:C.border, border:"none", color:C.muted, cursor:"pointer", borderRadius:6, padding:"4px 8px", fontSize:11 }}>
               リセット
             </button>
           )}
@@ -410,8 +443,7 @@ export default function Home() {
 
   const FilterBar = (
     <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"10px 12px":"10px 24px" }}>
-      <input
-        type="text" placeholder="銘柄名・コードで検索..."
+      <input type="text" placeholder="銘柄名・コードで検索..."
         value={searchText} onChange={e => setSearchText(e.target.value)}
         style={{ width:"100%", marginBottom:10, padding:"8px 12px", background:C.bg, border:`1px solid ${C.border}`, borderRadius:6, color:C.bright, fontSize:13, boxSizing:"border-box" as const }}
       />
@@ -444,12 +476,12 @@ export default function Home() {
       </div>
       {loading ? (
         <div style={{ textAlign:"center", color:C.muted, padding:40 }}>取得中…</div>
-      ) : sorted.map(s => {
+      ) : sorted.map((s, idx) => {
+        const sA = sortedAuto[idx];
         const rating = ratingInfo(s.updownPct);
         const isEdit = editRR[s.code];
         const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
-        const pbr = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
-        const rUsed = useAutoR && s.autoR > 0.01 ? s.autoR : s.requiredReturn;
+        const pbr = s.bps > 0 && s.price > 0 ? (s.price/s.bps).toFixed(2) : "—";
         return (
           <div key={s.code} onClick={() => setSelected(selected===s.code?null:s.code)}
             style={{ background:C.surface, border:`1px solid`, borderColor:selected===s.code?C.accent:C.border, borderRadius:12, padding:"14px 16px", marginBottom:10, cursor:"pointer" }}>
@@ -461,24 +493,41 @@ export default function Home() {
               </div>
               <span style={{ color:rating.color, background:rating.bg, border:`1px solid ${rating.color}40`, borderRadius:6, padding:"3px 10px", fontSize:11, fontWeight:700, flexShrink:0, marginLeft:8 }}>{rating.label}</span>
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
-              {[
-                { label:"現在株価", value: s.price > 0 ? `¥${fmt(s.price)}` : loadingPrices ? "取得中…" : "¥0", sub:`${parseFloat(changePct)>=0?"+":""}${changePct}%`, subColor:parseFloat(changePct)>=0?"#22d3a0":"#f87171" },
-                { label:"理論株価", value:`¥${fmt(s.theoretical)}`, sub:"", subColor:"#93c5fd" },
-                { label:"乖離率", value:`${parseFloat(s.updownPct)>=0?"+":""}${s.updownPct}%`, sub:"", subColor:pctColor(s.updownPct) },
-              ].map(item => (
-                <div key={item.label} style={{ background:C.bg, borderRadius:8, padding:"8px 10px" }}>
-                  <div style={{ fontSize:9, color:C.muted, marginBottom:3 }}>{item.label}</div>
-                  <div style={{ fontWeight:700, fontSize:13, color:item.subColor }}>{item.value}</div>
-                  {item.sub && <div style={{ fontSize:10, color:item.subColor, marginTop:2 }}>{item.sub}</div>}
-                </div>
-              ))}
+
+            {/* 現在株価 */}
+            <div style={{ background:C.bg, borderRadius:8, padding:"8px 10px", marginBottom:8 }}>
+              <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>現在株価</div>
+              <div style={{ fontWeight:700, fontSize:15, color:"#22d3a0" }}>
+                {s.price > 0 ? `¥${fmt(s.price)}` : loadingPrices ? "取得中…" : "¥0"}
+              </div>
+              <div style={{ fontSize:10, color:parseFloat(changePct)>=0?"#22d3a0":"#f87171" }}>
+                {parseFloat(changePct)>=0?"+":""}{changePct}%
+              </div>
             </div>
+
+            {/* 2方式の理論株価を並べて表示 */}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
+              <div style={{ background:C.bg, borderRadius:8, padding:"8px 10px", border:`1px solid ${C.border}` }}>
+                <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>理論株価（固定r={( s.requiredReturn*100).toFixed(1)}%）</div>
+                <div style={{ fontWeight:700, fontSize:14, color:"#93c5fd" }}>¥{fmt(s.theoretical)}</div>
+                <div style={{ fontSize:11, color:pctColor(s.updownPct) }}>
+                  {parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%
+                </div>
+              </div>
+              <div style={{ background:C.bg, borderRadius:8, padding:"8px 10px", border:`1px solid #1e40af` }}>
+                <div style={{ fontSize:9, color:"#60a5fa", marginBottom:2 }}>日経マネー式（r={sA ? (sA.autoR*100).toFixed(1) : "—"}%）</div>
+                <div style={{ fontWeight:700, fontSize:14, color:"#93c5fd" }}>{sA ? `¥${fmt(sA.theoretical)}` : "—"}</div>
+                <div style={{ fontSize:11, color:sA ? pctColor(sA.updownPct) : C.muted }}>
+                  {sA ? `${parseFloat(sA.updownPct)>=0?"+":""}${sA.updownPct}%` : "—"}
+                </div>
+              </div>
+            </div>
+
             <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" as const }}>
               <span style={{ fontSize:11, color:C.muted }}>PBR: <strong style={{ color:C.text }}>{pbr}倍</strong></span>
               <span style={{ fontSize:11, color:C.muted }}>ROE: <strong style={{ color:C.text }}>{(s.roe*100).toFixed(1)}%</strong></span>
-              <span onClick={e => { e.stopPropagation(); if(!useAutoR) setEditRR(p => ({ ...p, [s.code]:true })); }}>
-                {!useAutoR && isEdit ? (
+              <span onClick={e => { e.stopPropagation(); setEditRR(p => ({ ...p, [s.code]:true })); }}>
+                {isEdit ? (
                   <input autoFocus type="number" min={1} max={30} step={0.5}
                     defaultValue={(s.requiredReturn*100).toFixed(1)}
                     style={{ width:56, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:6, padding:"2px 6px", fontSize:12 }}
@@ -486,9 +535,7 @@ export default function Home() {
                     onKeyDown={e => { if(e.key==="Enter"){ updateRR(s.code,(e.target as HTMLInputElement).value); setEditRR(p=>({...p,[s.code]:false})); }}}
                   />
                 ) : (
-                  <strong style={{ color:"#fbbf24", borderBottom:useAutoR?"none":"1px dashed #4a5568", cursor:useAutoR?"default":"pointer", fontSize:13 }}>
-                    r={((rUsed)*100).toFixed(1)}%
-                  </strong>
+                  <strong style={{ color:"#fbbf24", borderBottom:"1px dashed #4a5568", cursor:"pointer", fontSize:13 }}>r={( s.requiredReturn*100).toFixed(1)}%</strong>
                 )}
               </span>
               <span style={{ marginLeft:"auto", fontSize:11, color:C.muted }}>詳細 →</span>
@@ -507,22 +554,24 @@ export default function Home() {
 
   const DesktopTable = (
     <div style={{ flex:1, overflowX:"auto" }}>
-      <table style={{ width:"100%", borderCollapse:"collapse", minWidth:800 }}>
+      <table style={{ width:"100%", borderCollapse:"collapse", minWidth:900 }}>
         <thead>
           <tr>
             {[
-              { key:"code",   label:"コード / 銘柄", align:"left" },
-              { key:"price",  label:"現在株価",      align:"right" },
-              { key:"theory", label:"理論株価",      align:"right" },
-              { key:"updown", label:"乖離率",        align:"right" },
-              { key:"pbr",    label:"PBR",           align:"right" },
-              { key:"roe",    label:"ROE",           align:"right" },
-              { key:"rr",     label:"r(株主資本コスト)", align:"right" },
-              { key:"rating", label:"評価",          align:"center" },
+              { key:"code",    label:"コード / 銘柄",    align:"left" },
+              { key:"price",   label:"現在株価",         align:"right" },
+              { key:"theory",  label:"理論株価（固定r）", align:"right" },
+              { key:"updown",  label:"乖離率（固定r）",  align:"right" },
+              { key:"theory2", label:"日経マネー式",     align:"right" },
+              { key:"updown2", label:"乖離率（日経）",   align:"right" },
+              { key:"pbr",     label:"PBR",              align:"right" },
+              { key:"roe",     label:"ROE",              align:"right" },
+              { key:"rr",      label:"r(固定) ✎",       align:"right" },
+              { key:"rating",  label:"評価",             align:"center" },
             ].map(col => (
               <th key={col.key}
-                onClick={() => !["rr","rating","pbr"].includes(col.key) && handleSort(col.key)}
-                style={{ padding:"10px 14px", fontSize:10, letterSpacing:2, color:C.muted, fontWeight:700, textTransform:"uppercase" as const, cursor:!["rr","rating","pbr"].includes(col.key)?"pointer":"default", userSelect:"none" as const, borderBottom:`2px solid ${C.border}`, textAlign:col.align as "left"|"right"|"center", whiteSpace:"nowrap" as const }}
+                onClick={() => !["rr","rating","pbr","theory2","updown2"].includes(col.key) && handleSort(col.key)}
+                style={{ padding:"10px 10px", fontSize:9, letterSpacing:1, color:C.muted, fontWeight:700, textTransform:"uppercase" as const, cursor:!["rr","rating","pbr","theory2","updown2"].includes(col.key)?"pointer":"default", userSelect:"none" as const, borderBottom:`2px solid ${C.border}`, textAlign:col.align as "left"|"right"|"center", whiteSpace:"nowrap" as const }}
               >
                 {col.label}{sortKey===col.key?(sortAsc?" ↑":" ↓"):""}
               </th>
@@ -531,55 +580,58 @@ export default function Home() {
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={8} style={{ padding:40, textAlign:"center", color:C.muted }}>取得中…</td></tr>
+            <tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.muted }}>取得中…</td></tr>
           ) : sorted.map((s, i) => {
+            const sA = sortedAuto[i];
             const rating = ratingInfo(s.updownPct);
             const isSel  = selected === s.code;
             const isEdit = editRR[s.code];
             const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
-            const pbr = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
-            const rUsed = useAutoR && s.autoR > 0.01 ? s.autoR : s.requiredReturn;
+            const pbr = s.bps > 0 && s.price > 0 ? (s.price/s.bps).toFixed(2) : "—";
             return (
               <tr key={s.code} onClick={() => setSelected(isSel?null:s.code)}
                 style={{ borderBottom:`1px solid ${C.border}`, background:isSel?"#0d2040":i%2===0?"#0a1525":C.bg, cursor:"pointer" }}
                 onMouseEnter={e => { if(!isSel) e.currentTarget.style.background="#0f1e35"; }}
                 onMouseLeave={e => { if(!isSel) e.currentTarget.style.background=i%2===0?"#0a1525":C.bg; }}
               >
-                <td style={{ padding:"10px 14px" }}>
-                  <span style={{ color:"#60a5fa", fontWeight:700, fontFamily:"monospace", marginRight:8, fontSize:12 }}>{s.code}</span>
+                <td style={{ padding:"10px 10px" }}>
+                  <span style={{ color:"#60a5fa", fontWeight:700, fontFamily:"monospace", marginRight:6, fontSize:11 }}>{s.code}</span>
                   <span style={{ color:C.bright, fontWeight:600 }}>{s.name}</span>
                   <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{s.sector}</div>
                 </td>
-                <td style={{ padding:"10px 14px", textAlign:"right" }}>
+                <td style={{ padding:"10px 10px", textAlign:"right" }}>
                   <div style={{ fontWeight:700 }}>
                     {s.price > 0 ? `¥${fmt(s.price)}` : loadingPrices ? <span style={{ color:C.muted, fontSize:11 }}>取得中…</span> : "¥0"}
                   </div>
                   <div style={{ fontSize:10, color:parseFloat(changePct)>=0?"#22d3a0":"#f87171" }}>{parseFloat(changePct)>=0?"+":""}{changePct}%</div>
                 </td>
-                <td style={{ padding:"10px 14px", textAlign:"right", color:"#93c5fd", fontWeight:700 }}>¥{fmt(s.theoretical)}</td>
-                <td style={{ padding:"10px 14px", textAlign:"right" }}>
-                  <span style={{ color:pctColor(s.updownPct), fontWeight:800, fontSize:15 }}>{parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%</span>
+                <td style={{ padding:"10px 10px", textAlign:"right", color:"#93c5fd", fontWeight:700 }}>¥{fmt(s.theoretical)}</td>
+                <td style={{ padding:"10px 10px", textAlign:"right" }}>
+                  <span style={{ color:pctColor(s.updownPct), fontWeight:800 }}>{parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%</span>
                 </td>
-                <td style={{ padding:"10px 14px", textAlign:"right", color:C.muted }}>{pbr}倍</td>
-                <td style={{ padding:"10px 14px", textAlign:"right", color:C.muted }}>{(s.roe*100).toFixed(1)}%</td>
-                <td style={{ padding:"10px 14px", textAlign:"right" }}
-                  onClick={e => { e.stopPropagation(); if(!useAutoR) setEditRR(p=>({...p,[s.code]:true})); }}>
-                  {!useAutoR && isEdit ? (
+                <td style={{ padding:"10px 10px", textAlign:"right", color:"#7dd3fc", fontWeight:700 }}>
+                  {sA ? `¥${fmt(sA.theoretical)}` : "—"}
+                </td>
+                <td style={{ padding:"10px 10px", textAlign:"right" }}>
+                  {sA && <span style={{ color:pctColor(sA.updownPct), fontWeight:800 }}>{parseFloat(sA.updownPct)>=0?"+":""}{sA.updownPct}%</span>}
+                </td>
+                <td style={{ padding:"10px 10px", textAlign:"right", color:C.muted }}>{pbr}倍</td>
+                <td style={{ padding:"10px 10px", textAlign:"right", color:C.muted }}>{(s.roe*100).toFixed(1)}%</td>
+                <td style={{ padding:"10px 10px", textAlign:"right" }}
+                  onClick={e => { e.stopPropagation(); setEditRR(p=>({...p,[s.code]:true})); }}>
+                  {isEdit ? (
                     <input autoFocus type="number" min={1} max={30} step={0.5}
-                      defaultValue={(rUsed*100).toFixed(1)}
-                      style={{ width:56, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:4, padding:"2px 6px", fontSize:12, textAlign:"right" }}
+                      defaultValue={(s.requiredReturn*100).toFixed(1)}
+                      style={{ width:52, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:4, padding:"2px 6px", fontSize:12, textAlign:"right" }}
                       onBlur={e => { updateRR(s.code, e.target.value); setEditRR(p=>({...p,[s.code]:false})); }}
                       onKeyDown={e => { if(e.key==="Enter"){ updateRR(s.code,(e.target as HTMLInputElement).value); setEditRR(p=>({...p,[s.code]:false})); }}}
                     />
                   ) : (
-                    <span style={{ color:"#fbbf24", fontWeight:700, borderBottom:useAutoR?"none":"1px dashed #4a5568", cursor:useAutoR?"default":"text" }}>
-                      {(rUsed*100).toFixed(1)}%
-                      {useAutoR && <span style={{ fontSize:9, color:"#60a5fa", marginLeft:2 }}>自動</span>}
-                    </span>
+                    <span style={{ color:"#fbbf24", fontWeight:700, borderBottom:"1px dashed #4a5568", cursor:"text" }}>{(s.requiredReturn*100).toFixed(1)}%</span>
                   )}
                 </td>
-                <td style={{ padding:"10px 14px", textAlign:"center" }}>
-                  <span style={{ color:rating.color, background:rating.bg, border:`1px solid ${rating.color}40`, borderRadius:5, padding:"3px 10px", fontSize:11, fontWeight:700 }}>{rating.label}</span>
+                <td style={{ padding:"10px 10px", textAlign:"center" }}>
+                  <span style={{ color:rating.color, background:rating.bg, border:`1px solid ${rating.color}40`, borderRadius:5, padding:"3px 8px", fontSize:11, fontWeight:700 }}>{rating.label}</span>
                 </td>
               </tr>
             );
@@ -595,8 +647,9 @@ export default function Home() {
         </div>
       )}
       <div style={{ padding:"12px 20px", borderTop:`1px solid ${C.border}`, fontSize:10, color:"#334155", lineHeight:1.8 }}>
-        ※ 表示中: {sorted.length}件 / {totalCount}銘柄（東証プライム）　
-        ※ 理論株価 = BPS + 残余利益PV（日経マネー式残余利益モデル）　
+        ※ 表示中: {sorted.length}件 / {totalCount}銘柄　
+        ※ 固定r: 要求利回りを銘柄ごとに手動設定　
+        ※ 日経マネー式: r = ROA × 財務レバレッジ補正　
         ※ 株価はYahoo Financeより取得
       </div>
     </div>
@@ -610,12 +663,16 @@ export default function Home() {
       {isMobile ? (
         <>
           {MobileList}
-          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} useAutoR={useAutoR} isMobile={true} onClose={() => setSelected(null)} />}
+          {selectedFixed && selectedAuto && (
+            <DetailPanel s={selectedFixed} sAuto={selectedAuto} forecastYears={forecastYears} terminalG={terminalG} isMobile={true} onClose={() => setSelected(null)} />
+          )}
         </>
       ) : (
         <div style={{ display:"flex" }}>
           {DesktopTable}
-          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} useAutoR={useAutoR} isMobile={false} onClose={() => setSelected(null)} />}
+          {selectedFixed && selectedAuto && (
+            <DetailPanel s={selectedFixed} sAuto={selectedAuto} forecastYears={forecastYears} terminalG={terminalG} isMobile={false} onClose={() => setSelected(null)} />
+          )}
         </div>
       )}
     </div>
