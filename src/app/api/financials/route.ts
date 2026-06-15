@@ -1,7 +1,4 @@
 // src/app/api/financials/route.ts
-// 【生値保存方式】SupabaseのrawカラムからJ-Quantsの生値を読み込み、
-// 単位変換・ROE・予想ROE等の計算をここで行う。
-// 理論株価 = BPS + 残余事業利益PV（簡易RIMモデル）
 import { NextRequest, NextResponse } from "next/server";
 
 const SB_URL = process.env.SUPABASE_URL ?? "";
@@ -16,38 +13,42 @@ const toNum = (v: unknown): number => {
 const TARGET_ROE = 0.08;
 
 function convertRow(s: Record<string, unknown>) {
-  // 円 → 百万円
-  const equity    = toNum(s.eq_raw)   / 1_000_000;
-  const cash      = toNum(s.cash_raw) / 1_000_000;
-  const totalAssets = toNum(s.ta_raw) / 1_000_000;
-  const netProfit = toNum(s.np_raw)   / 1_000_000;
+  const equity      = toNum(s.eq_raw)   / 1_000_000;
+  const totalAssets = toNum(s.ta_raw)   / 1_000_000;
+  const cash        = toNum(s.cash_raw) / 1_000_000;
+  const netProfit   = toNum(s.np_raw)   / 1_000_000;
+  // 経常利益（来期予想優先、なければ今期）
+  const odp         = toNum(s.nxf_op_raw) > 0
+    ? toNum(s.nxf_op_raw)  / 1_000_000   // 来期予想営業利益
+    : toNum(s.odp_raw)     / 1_000_000;  // 今期経常利益
 
-  // 株 → 千株
   const shOut = toNum(s.sh_out_raw) / 1000;
   const avgSh = toNum(s.avg_sh_raw) / 1000;
 
   const bpsRaw = toNum(s.bps_raw);
   const epsRaw = toNum(s.eps_raw);
 
-  // 発行済株式数（千株）
   const shares = shOut > 0 ? shOut
     : avgSh > 0 ? avgSh
     : (bpsRaw > 0 && equity > 0 ? (equity / bpsRaw) * 1000 : 0);
 
-  // BPS: 無ければEq/sharesから逆算
   const bps = bpsRaw > 0 ? bpsRaw
     : (shares > 1 ? (equity / shares) * 1000 : 0);
 
-  // EPS: NPと株式数から再計算（業績修正でEPSが空になる場合があるため）
+  // 通常EPS（純利益ベース、RIMモデル用）
   const eps = (netProfit !== 0 && shares > 1)
     ? (netProfit / shares) * 1000
     : epsRaw;
 
-  // ROE = EPS / BPS
+  // 日経マネー式EPS = 予想経常利益(または営業利益) × 0.7 ÷ 株式数
+  // 経常利益がない場合は純利益ベースにフォールバック
+  const nikkeiEps = (odp > 0 && shares > 1)
+    ? (odp / shares) * 1000 * 0.7
+    : eps;
+
   const roe = bps > 0 && eps !== 0 ? eps / bps
     : (equity > 0 && netProfit !== 0 ? netProfit / equity : 0);
 
-  // 来期予想EPSがあれば1年目のROEに反映
   const nxfEps = toNum(s.nxf_eps_raw);
   const roeYear1 = nxfEps > 0 && bps > 0 ? nxfEps / bps : roe;
 
@@ -57,12 +58,11 @@ function convertRow(s: Record<string, unknown>) {
     return roe * (1 - w) + TARGET_ROE * w;
   });
 
-  // 簡易版: 正味営業資産・正味金融資産は参考値として返すが理論株価計算には使わない
   const operatingAssets      = totalAssets - cash;
-  const operatingLiabilities = totalAssets - equity; // 有利子負債=0固定の暫定値
+  const operatingLiabilities = totalAssets - equity;
 
   return {
-    bps, eps, roe, forecastROE,
+    bps, eps, nikkeiEps, roe, forecastROE,
     totalAssets, equity,
     operatingAssets, operatingLiabilities,
     cash,
@@ -87,6 +87,7 @@ export async function GET(req: NextRequest) {
     "required_return", "updated_at",
     "ta_raw", "eq_raw", "cash_raw", "np_raw",
     "sh_out_raw", "avg_sh_raw", "bps_raw", "eps_raw", "nxf_eps_raw",
+    "odp_raw", "nxf_op_raw",
   ].join(",");
 
   let url = `${SB_URL}/rest/v1/stocks?select=${cols}&limit=${limit}&offset=${offset}`;
@@ -122,6 +123,7 @@ export async function GET(req: NextRequest) {
         finDate:              s.fin_date,
         bps:                  calc.bps,
         eps:                  calc.eps,
+        nikkeiEps:            calc.nikkeiEps,  // 日経マネー式EPS
         roe:                  calc.roe,
         forecastROE:          calc.forecastROE,
         totalAssets:          calc.totalAssets,
