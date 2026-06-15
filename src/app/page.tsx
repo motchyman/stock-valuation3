@@ -1,4 +1,4 @@
-// src/app/page.tsx - サーバーサイド検索対応版
+// src/app/page.tsx - PBRフィルター追加版
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
@@ -35,7 +35,7 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
   const maxP = Math.max(s.price, s.theoretical) * 1.1;
   const pW   = (s.price / maxP) * 100;
   const tW   = (s.theoretical / maxP) * 100;
-  const total = Math.abs(s.netOperatingAssetsPS) + Math.abs(s.netFinancialAssetsPS) + Math.abs(s.pvREI);
+  const pbr  = s.bps > 0 ? (s.price / s.bps).toFixed(2) : "—";
 
   return (
     <div style={isMobile
@@ -67,6 +67,9 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
             <span style={{ color:pctColor(s.updownPct), fontWeight:800, fontSize:22 }}>
               {parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%
             </span>
+          </div>
+          <div style={{ textAlign:"center", fontSize:11, color:C.muted, marginTop:4 }}>
+            PBR: <strong style={{ color:C.text }}>{pbr}倍</strong>　BPS: <strong style={{ color:C.text }}>¥{fmt(s.bps)}</strong>
           </div>
         </div>
         <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>理論株価の構成（円/株）</div>
@@ -147,6 +150,9 @@ export default function Home() {
   const [totalCount, setTotalCount]     = useState(0);
   const [displayLimit, setDisplayLimit] = useState(50);
   const [apiError, setApiError]         = useState(false);
+  // PBRフィルター: 0=無効(全件表示)
+  const [minPbr, setMinPbr]             = useState(0);
+  const [maxPbr, setMaxPbr]             = useState(0);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -221,7 +227,6 @@ export default function Home() {
     }
   }, [fetchYahooPrices]);
 
-  // 検索テキストの変更はデバウンスしてサーバーに問い合わせ
   useEffect(() => {
     const timer = setTimeout(() => {
       fetchData(selectedSector, displayLimit, searchText);
@@ -241,8 +246,16 @@ export default function Home() {
     [stocks, forecastYears, terminalG]
   );
 
-  // 検索はサーバーサイドで行うためフロント側フィルタリング不要
-  const filtered = results;
+  // PBRフィルター適用
+  const filtered = useMemo(() => {
+    return results.filter(s => {
+      if (s.price <= 0 || s.bps <= 0) return true; // 株価未取得はスキップしない
+      const pbr = s.price / s.bps;
+      if (minPbr > 0 && pbr < minPbr) return false;
+      if (maxPbr > 0 && pbr > maxPbr) return false;
+      return true;
+    });
+  }, [results, minPbr, maxPbr]);
 
   const sorted = useMemo(() => [...filtered].sort((a, b) => {
     let va: number, vb: number;
@@ -283,6 +296,7 @@ export default function Home() {
 
   const SettingsPanel = showSettings && (
     <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"14px 16px":"14px 24px", display:"flex", flexWrap:"wrap", gap:20, alignItems:"center" }}>
+      {/* 予測期間 */}
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>予測期間</div>
         <div style={{ display:"flex", gap:5 }}>
@@ -298,6 +312,7 @@ export default function Home() {
           <span style={{ lineHeight:isMobile?"36px":"30px", fontSize:12, color:C.muted }}>年</span>
         </div>
       </div>
+      {/* 終端成長率 */}
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>
           終端成長率: <strong style={{ color:"#93c5fd" }}>{(terminalG*100).toFixed(1)}%</strong>
@@ -306,6 +321,45 @@ export default function Home() {
           value={(terminalG*100).toFixed(1)}
           onChange={e => setTerminalG(parseFloat(e.target.value)/100)}
           style={{ width:isMobile?140:110, accentColor:C.accent }} />
+      </div>
+      {/* PBRフィルター */}
+      <div>
+        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>PBRフィルター（0=無効）</div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
+            <span style={{ fontSize:9, color:C.muted }}>最小</span>
+            <input
+              type="number" min={0} max={20} step={0.1}
+              value={minPbr || ""}
+              placeholder="0"
+              onChange={e => setMinPbr(parseFloat(e.target.value) || 0)}
+              style={{ width:60, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }}
+            />
+          </div>
+          <span style={{ color:C.muted, fontSize:12, marginTop:14 }}>〜</span>
+          <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
+            <span style={{ fontSize:9, color:C.muted }}>最大</span>
+            <input
+              type="number" min={0} max={20} step={0.1}
+              value={maxPbr || ""}
+              placeholder="0"
+              onChange={e => setMaxPbr(parseFloat(e.target.value) || 0)}
+              style={{ width:60, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }}
+            />
+          </div>
+          <span style={{ color:C.muted, fontSize:12, marginTop:14 }}>倍</span>
+          {(minPbr > 0 || maxPbr > 0) && (
+            <button
+              onClick={() => { setMinPbr(0); setMaxPbr(0); }}
+              style={{ background:C.border, border:"none", color:C.muted, cursor:"pointer", borderRadius:6, padding:"4px 8px", fontSize:11, marginTop:14 }}
+            >リセット</button>
+          )}
+        </div>
+        {(minPbr > 0 || maxPbr > 0) && (
+          <div style={{ fontSize:10, color:"#fbbf24", marginTop:4 }}>
+            PBR {minPbr > 0 ? `${minPbr}倍以上` : ""}{minPbr > 0 && maxPbr > 0 ? "・" : ""}{maxPbr > 0 ? `${maxPbr}倍以下` : ""} の銘柄を表示中
+          </div>
+        )}
       </div>
     </div>
   );
@@ -350,6 +404,7 @@ export default function Home() {
         const rating = ratingInfo(s.updownPct);
         const isEdit = editRR[s.code];
         const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
+        const pbr = s.bps > 0 && s.price > 0 ? (s.price / s.bps).toFixed(2) : "—";
         return (
           <div key={s.code} onClick={() => setSelected(selected===s.code?null:s.code)}
             style={{ background:C.surface, border:`1px solid`, borderColor:selected===s.code?C.accent:C.border, borderRadius:12, padding:"14px 16px", marginBottom:10, cursor:"pointer" }}>
@@ -375,8 +430,8 @@ export default function Home() {
               ))}
             </div>
             <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" as const }}>
+              <span style={{ fontSize:11, color:C.muted }}>PBR: <strong style={{ color:C.text }}>{pbr}倍</strong></span>
               <span style={{ fontSize:11, color:C.muted }}>ROE: <strong style={{ color:C.text }}>{(s.roe*100).toFixed(1)}%</strong></span>
-              <span style={{ fontSize:11, color:C.muted }}>要求利回り: </span>
               <span onClick={e => { e.stopPropagation(); setEditRR(p => ({ ...p, [s.code]:true })); }}>
                 {isEdit ? (
                   <input autoFocus type="number" min={1} max={30} step={0.5}
@@ -405,7 +460,7 @@ export default function Home() {
 
   const DesktopTable = (
     <div style={{ flex:1, overflowX:"auto" }}>
-      <table style={{ width:"100%", borderCollapse:"collapse", minWidth:750 }}>
+      <table style={{ width:"100%", borderCollapse:"collapse", minWidth:800 }}>
         <thead>
           <tr>
             {[
@@ -413,13 +468,14 @@ export default function Home() {
               { key:"price",  label:"現在株価",      align:"right" },
               { key:"theory", label:"理論株価",      align:"right" },
               { key:"updown", label:"乖離率",        align:"right" },
+              { key:"pbr",    label:"PBR",           align:"right" },
               { key:"roe",    label:"予想ROE",       align:"right" },
               { key:"rr",     label:"要求利回り ✎", align:"right" },
               { key:"rating", label:"評価",          align:"center" },
             ].map(col => (
               <th key={col.key}
-                onClick={() => !["rr","rating"].includes(col.key) && handleSort(col.key)}
-                style={{ padding:"10px 14px", fontSize:10, letterSpacing:2, color:C.muted, fontWeight:700, textTransform:"uppercase" as const, cursor:!["rr","rating"].includes(col.key)?"pointer":"default", userSelect:"none" as const, borderBottom:`2px solid ${C.border}`, textAlign:col.align as "left"|"right"|"center", whiteSpace:"nowrap" as const }}
+                onClick={() => !["rr","rating","pbr"].includes(col.key) && handleSort(col.key)}
+                style={{ padding:"10px 14px", fontSize:10, letterSpacing:2, color:C.muted, fontWeight:700, textTransform:"uppercase" as const, cursor:!["rr","rating","pbr"].includes(col.key)?"pointer":"default", userSelect:"none" as const, borderBottom:`2px solid ${C.border}`, textAlign:col.align as "left"|"right"|"center", whiteSpace:"nowrap" as const }}
               >
                 {col.label}{sortKey===col.key?(sortAsc?" ↑":" ↓"):""}
               </th>
@@ -428,12 +484,13 @@ export default function Home() {
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={7} style={{ padding:40, textAlign:"center", color:C.muted }}>取得中…</td></tr>
+            <tr><td colSpan={8} style={{ padding:40, textAlign:"center", color:C.muted }}>取得中…</td></tr>
           ) : sorted.map((s, i) => {
             const rating = ratingInfo(s.updownPct);
             const isSel  = selected === s.code;
             const isEdit = editRR[s.code];
             const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
+            const pbr = s.bps > 0 && s.price > 0 ? (s.price / s.bps).toFixed(2) : "—";
             return (
               <tr key={s.code} onClick={() => setSelected(isSel?null:s.code)}
                 style={{ borderBottom:`1px solid ${C.border}`, background:isSel?"#0d2040":i%2===0?"#0a1525":C.bg, cursor:"pointer" }}
@@ -455,6 +512,7 @@ export default function Home() {
                 <td style={{ padding:"10px 14px", textAlign:"right" }}>
                   <span style={{ color:pctColor(s.updownPct), fontWeight:800, fontSize:15 }}>{parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%</span>
                 </td>
+                <td style={{ padding:"10px 14px", textAlign:"right", color:C.muted }}>{pbr}倍</td>
                 <td style={{ padding:"10px 14px", textAlign:"right", color:C.muted }}>{(s.roe*100).toFixed(1)}%</td>
                 <td style={{ padding:"10px 14px", textAlign:"right" }}
                   onClick={e => { e.stopPropagation(); setEditRR(p=>({...p,[s.code]:true})); }}>
