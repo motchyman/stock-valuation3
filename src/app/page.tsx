@@ -1,4 +1,4 @@
-// src/app/page.tsx - 2方式並列表示版
+// src/app/page.tsx - 日経マネー式並列表示版
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
@@ -28,17 +28,16 @@ const C = {
   accent: "#3b82f6", muted: "#4a6080", text: "#cbd5e1", bright: "#e2f0ff",
 };
 
-function DetailPanel({ s, sAuto, forecastYears, terminalG, isMobile, onClose }: {
-  s: ValuationResult; sAuto: ValuationResult;
-  forecastYears: number; terminalG: number;
+function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
+  s: ValuationResult; forecastYears: number; terminalG: number;
   isMobile: boolean; onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"fixed"|"auto">("fixed");
-  const cur = tab === "fixed" ? s : sAuto;
-  const maxP = Math.max(cur.price, cur.theoretical) * 1.1;
-  const pW   = (cur.price / maxP) * 100;
-  const tW   = (cur.theoretical / maxP) * 100;
-  const pbr  = cur.bps > 0 && cur.price > 0 ? (cur.price / cur.bps).toFixed(2) : "—";
+  const [tab, setTab] = useState<"rim"|"nikkei">("rim");
+  const maxP = Math.max(s.price, s.theoretical, s.nikkeiTheoretical) * 1.1 || 1;
+  const pW   = (s.price / maxP) * 100;
+  const rimW = (s.theoretical / maxP) * 100;
+  const nikW = (s.nikkeiTheoretical / maxP) * 100;
+  const pbr  = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
 
   return (
     <div style={isMobile
@@ -48,15 +47,15 @@ function DetailPanel({ s, sAuto, forecastYears, terminalG, isMobile, onClose }: 
       <div style={{ position:"sticky", top:0, zIndex:10, background:isMobile?C.bg:C.surface, borderBottom:`1px solid ${C.border}`, padding:"14px 18px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
         <div>
           <div style={{ fontSize:10, color:C.accent, letterSpacing:3, marginBottom:2 }}>詳細分析</div>
-          <div style={{ fontSize:16, fontWeight:800, color:C.bright }}>{cur.name}</div>
-          <div style={{ fontSize:11, color:C.muted }}>{cur.code} · {cur.sector}</div>
+          <div style={{ fontSize:16, fontWeight:800, color:C.bright }}>{s.name}</div>
+          <div style={{ fontSize:11, color:C.muted }}>{s.code} · {s.sector}</div>
         </div>
         <button onClick={onClose} style={{ background:C.border, border:"none", color:C.text, cursor:"pointer", borderRadius:8, width:32, height:32 }}>✕</button>
       </div>
 
-      {/* タブ切り替え */}
+      {/* タブ */}
       <div style={{ display:"flex", borderBottom:`1px solid ${C.border}` }}>
-        {([["fixed","固定r方式"],["auto","日経マネー式(ROA)"]] as const).map(([key, label]) => (
+        {([["rim","RIMモデル"],["nikkei","日経マネー式"]] as const).map(([key,label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             flex:1, padding:"10px", border:"none", cursor:"pointer",
             background:tab===key?"#1e3a6e":"transparent",
@@ -68,110 +67,137 @@ function DetailPanel({ s, sAuto, forecastYears, terminalG, isMobile, onClose }: 
       </div>
 
       <div style={{ padding:"18px 18px 0" }}>
-        {/* 方式の説明 */}
-        <div style={{ padding:"8px 12px", background:C.bg, borderRadius:6, fontSize:10, color:C.muted, marginBottom:14 }}>
-          {tab === "fixed"
-            ? `r = ${(cur.requiredReturn*100).toFixed(1)}%（固定値・銘柄ごとに設定可）`
-            : `r = ${(cur.autoR*100).toFixed(1)}%（ROA ${(cur.roa*100).toFixed(1)}% × 財務レバレッジ補正）`
-          }
-        </div>
-
-        {/* 株価バー */}
+        {/* 2方式比較バー */}
         <div style={{ marginBottom:20 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:C.muted, marginBottom:6 }}>
-            <span>現在株価</span><span style={{ color:"#93c5fd" }}>理論株価</span>
-          </div>
-          <div style={{ position:"relative", height:10, background:C.border, borderRadius:5 }}>
-            <div style={{ position:"absolute", left:0, width:`${pW}%`, height:"100%", background:"#1e3a6e", borderRadius:5 }} />
-            <div style={{ position:"absolute", left:`${Math.min(tW,97)}%`, top:-2, width:4, height:14, background:cur.theoretical>cur.price?"#22d3a0":"#f87171", borderRadius:2 }} />
-          </div>
-          <div style={{ display:"flex", justifyContent:"space-between", marginTop:6, fontWeight:700, fontSize:15 }}>
-            <span>¥{fmt(cur.price)}</span>
-            <span style={{ color:"#93c5fd" }}>¥{fmt(cur.theoretical)}</span>
-          </div>
-          <div style={{ textAlign:"center", marginTop:6 }}>
-            <span style={{ color:pctColor(cur.updownPct), fontWeight:800, fontSize:22 }}>
-              {parseFloat(cur.updownPct)>=0?"+":""}{cur.updownPct}%
-            </span>
-          </div>
-          <div style={{ textAlign:"center", fontSize:11, color:C.muted, marginTop:4 }}>
-            PBR: <strong style={{ color:C.text }}>{pbr}倍</strong>　BPS: <strong style={{ color:C.text }}>¥{fmt(cur.bps)}</strong>
-          </div>
-        </div>
-
-        {/* 2方式の比較 */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:20 }}>
+          <div style={{ fontSize:10, color:C.muted, marginBottom:8 }}>株価 vs 理論株価の比較</div>
           {[
-            { label:"固定r方式", val:s.theoretical, pct:s.updownPct, r:s.requiredReturn, active:tab==="fixed" },
-            { label:"日経マネー式", val:sAuto.theoretical, pct:sAuto.updownPct, r:sAuto.autoR, active:tab==="auto" },
+            { label:"現在株価", w:pW, color:"#60a5fa", val:s.price },
+            { label:"RIM理論株価", w:rimW, color:"#93c5fd", val:s.theoretical },
+            { label:"日経マネー式", w:nikW, color:"#34d399", val:s.nikkeiTheoretical },
           ].map(item => (
-            <div key={item.label} style={{ background:item.active?"#0d2040":C.bg, border:`1px solid ${item.active?C.accent:C.border}`, borderRadius:8, padding:"10px 12px" }}>
-              <div style={{ fontSize:9, color:item.active?C.accent:C.muted, marginBottom:4, fontWeight:700 }}>{item.label}</div>
-              <div style={{ fontWeight:800, fontSize:15, color:"#93c5fd" }}>¥{fmt(item.val)}</div>
-              <div style={{ fontSize:11, color:pctColor(item.pct), marginTop:2 }}>
-                {parseFloat(item.pct)>=0?"+":""}{item.pct}%
+            <div key={item.label} style={{ marginBottom:6 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:C.muted, marginBottom:2 }}>
+                <span>{item.label}</span>
+                <span style={{ color:item.color }}>¥{fmt(item.val)}</span>
               </div>
-              <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>r={( item.r*100).toFixed(1)}%</div>
+              <div style={{ height:6, background:C.border, borderRadius:3 }}>
+                <div style={{ height:"100%", width:`${Math.min(item.w,100)}%`, background:item.color, borderRadius:3 }} />
+              </div>
             </div>
           ))}
         </div>
 
-        {/* 理論株価の内訳 */}
-        <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>理論株価の構成（円/株）</div>
-        {[
-          { label:"BPS（簿価純資産）", val:cur.bps, color:"#818cf8" },
-          { label:"残余利益PV", val:cur.pvREI, color:"#fbbf24" },
-        ].map(item => (
-          <div key={item.label} style={{ marginBottom:12 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, fontSize:13 }}>
-              <span style={{ color:C.muted }}>{item.label}</span>
-              <span style={{ color:item.color, fontWeight:700 }}>{item.val>=0?"+":""}{fmt(item.val)}</span>
+        {/* 2方式の乖離率比較 */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:20 }}>
+          {[
+            { label:"RIMモデル", val:s.theoretical, pct:s.updownPct, note:`r=${(s.requiredReturn*100).toFixed(1)}%`, active:tab==="rim" },
+            { label:"日経マネー式", val:s.nikkeiTheoretical, pct:s.nikkeiUpdownPct, note:`ROA=${(s.roa*100).toFixed(1)}%`, active:tab==="nikkei" },
+          ].map(item => (
+            <div key={item.label} onClick={() => setTab(item.label==="RIMモデル"?"rim":"nikkei")}
+              style={{ background:item.active?"#0d2040":C.bg, border:`1px solid ${item.active?C.accent:C.border}`, borderRadius:8, padding:"10px 12px", cursor:"pointer" }}>
+              <div style={{ fontSize:9, color:item.active?C.accent:C.muted, marginBottom:4, fontWeight:700 }}>{item.label}</div>
+              <div style={{ fontWeight:800, fontSize:15, color:"#93c5fd" }}>¥{fmt(item.val)}</div>
+              <div style={{ fontSize:12, color:pctColor(item.pct), marginTop:2, fontWeight:700 }}>
+                {parseFloat(item.pct)>=0?"+":""}{item.pct}%
+              </div>
+              <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{item.note}</div>
             </div>
-            <div style={{ height:5, background:C.border, borderRadius:3 }}>
-              <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(cur.bps)+Math.abs(cur.pvREI)||1))*100}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
-            </div>
-          </div>
-        ))}
-        <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:10, marginTop:4, marginBottom:20 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", fontSize:14, fontWeight:800 }}>
-            <span style={{ color:C.muted }}>理論株価</span>
-            <span style={{ color:"#93c5fd" }}>¥{fmt(cur.theoretical)}</span>
-          </div>
-          <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>終端価値PV: ¥{fmt(cur.terminalPV)}</div>
+          ))}
         </div>
 
-        {/* 年次明細 */}
-        <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:8 }}>残余利益の年次明細</div>
-        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
-          <thead>
-            <tr style={{ borderBottom:`1px solid ${C.border}` }}>
-              {["期","ROE","残余利益","PV"].map(h => (
-                <th key={h} style={{ padding:"4px 4px", textAlign:"right", color:C.muted, fontWeight:600, fontSize:10 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {cur.reiByYear.map(row => (
-              <tr key={row.year} style={{ borderBottom:`1px solid ${C.border}22` }}>
-                <td style={{ padding:"4px 4px", textAlign:"right", color:C.muted }}>{row.year}</td>
-                <td style={{ padding:"4px 4px", textAlign:"right", color:C.muted }}>{(row.roe*100).toFixed(1)}%</td>
-                <td style={{ padding:"4px 4px", textAlign:"right", color:row.rei>=0?"#86efac":"#f87171" }}>{row.rei>=0?"+":""}{fmt(row.rei)}</td>
-                <td style={{ padding:"4px 4px", textAlign:"right", color:C.text }}>{fmt(row.pv)}</td>
-              </tr>
+        <div style={{ textAlign:"center", fontSize:11, color:C.muted, marginBottom:16 }}>
+          PBR: <strong style={{ color:C.text }}>{pbr}倍</strong>　BPS: <strong style={{ color:C.text }}>¥{fmt(s.bps)}</strong>
+        </div>
+
+        {/* タブ別詳細 */}
+        {tab === "rim" ? (
+          <>
+            <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>RIM理論株価の内訳</div>
+            {[
+              { label:"BPS（簿価純資産）", val:s.bps, color:"#818cf8" },
+              { label:"残余利益PV", val:s.pvREI, color:"#fbbf24" },
+            ].map(item => (
+              <div key={item.label} style={{ marginBottom:12 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, fontSize:13 }}>
+                  <span style={{ color:C.muted }}>{item.label}</span>
+                  <span style={{ color:item.color, fontWeight:700 }}>{item.val>=0?"+":""}{fmt(item.val)}</span>
+                </div>
+                <div style={{ height:5, background:C.border, borderRadius:3 }}>
+                  <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(s.bps)+Math.abs(s.pvREI)||1))*100}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
+                </div>
+              </div>
             ))}
-            <tr style={{ borderTop:`1px solid ${C.border}` }}>
-              <td colSpan={2} style={{ padding:"4px 4px", textAlign:"right", color:C.muted, fontSize:10 }}>終端価値</td>
-              <td colSpan={2} style={{ padding:"4px 4px", textAlign:"right", color:"#fbbf24" }}>+{fmt(cur.terminalPV)}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <div style={{ margin:"18px 0", padding:12, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
-          <div style={{ color:C.accent, marginBottom:4, fontSize:10 }}>計算前提</div>
-          終端成長率: <strong style={{ color:C.text }}>{(terminalG*100).toFixed(1)}%</strong>　
-          予測期間: <strong style={{ color:C.text }}>{forecastYears}年</strong><br/>
-          データ基準日: <strong style={{ color:C.text }}>{cur.priceDate ?? "—"}</strong>
-        </div>
+            <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:10, marginBottom:16 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, fontWeight:800 }}>
+                <span style={{ color:C.muted }}>RIM理論株価</span>
+                <span style={{ color:"#93c5fd" }}>¥{fmt(s.theoretical)}</span>
+              </div>
+              <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>終端価値PV: ¥{fmt(s.terminalPV)}</div>
+            </div>
+            <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:8 }}>残余利益の年次明細</div>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+              <thead>
+                <tr style={{ borderBottom:`1px solid ${C.border}` }}>
+                  {["期","ROE","残余利益","PV"].map(h => (
+                    <th key={h} style={{ padding:"4px", textAlign:"right", color:C.muted, fontWeight:600, fontSize:10 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {s.reiByYear.map(row => (
+                  <tr key={row.year} style={{ borderBottom:`1px solid ${C.border}22` }}>
+                    <td style={{ padding:"4px", textAlign:"right", color:C.muted }}>{row.year}</td>
+                    <td style={{ padding:"4px", textAlign:"right", color:C.muted }}>{(row.roe*100).toFixed(1)}%</td>
+                    <td style={{ padding:"4px", textAlign:"right", color:row.rei>=0?"#86efac":"#f87171" }}>{row.rei>=0?"+":""}{fmt(row.rei)}</td>
+                    <td style={{ padding:"4px", textAlign:"right", color:C.text }}>{fmt(row.pv)}</td>
+                  </tr>
+                ))}
+                <tr style={{ borderTop:`1px solid ${C.border}` }}>
+                  <td colSpan={2} style={{ padding:"4px", textAlign:"right", color:C.muted, fontSize:10 }}>終端価値</td>
+                  <td colSpan={2} style={{ padding:"4px", textAlign:"right", color:"#fbbf24" }}>+{fmt(s.terminalPV)}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div style={{ margin:"14px 0", padding:10, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
+              <div style={{ color:C.accent, marginBottom:2, fontSize:10 }}>計算前提</div>
+              r(要求利回り): <strong style={{ color:C.text }}>{(s.requiredReturn*100).toFixed(1)}%</strong>　
+              終端成長率: <strong style={{ color:C.text }}>{(terminalG*100).toFixed(1)}%</strong><br/>
+              予測期間: <strong style={{ color:C.text }}>{forecastYears}年</strong>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>日経マネー式の内訳</div>
+            {[
+              { label:"事業価値 (EPS×15×ROA×10×レバレッジ補正)", val:s.nikkeiBusinessValue, color:"#fbbf24" },
+              { label:"資産価値 (BPS×0.7 − 有利子負債/株)", val:s.nikkeiAssetValue, color:"#818cf8" },
+            ].map(item => (
+              <div key={item.label} style={{ marginBottom:12 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, fontSize:12 }}>
+                  <span style={{ color:C.muted, fontSize:10 }}>{item.label}</span>
+                  <span style={{ color:item.color, fontWeight:700 }}>{item.val>=0?"+":""}{fmt(item.val)}</span>
+                </div>
+                <div style={{ height:5, background:C.border, borderRadius:3 }}>
+                  <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(s.nikkeiBusinessValue)+Math.abs(s.nikkeiAssetValue)||1))*100}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
+                </div>
+              </div>
+            ))}
+            <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:10, marginBottom:16 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, fontWeight:800 }}>
+                <span style={{ color:C.muted }}>日経マネー式理論株価</span>
+                <span style={{ color:"#34d399" }}>¥{fmt(s.nikkeiTheoretical)}</span>
+              </div>
+            </div>
+            <div style={{ padding:12, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
+              <div style={{ color:C.accent, marginBottom:4, fontSize:10 }}>計算詳細</div>
+              EPS: <strong style={{ color:C.text }}>¥{fmt(s.eps)}</strong><br/>
+              ROA: <strong style={{ color:C.text }}>{(s.roa*100).toFixed(1)}%</strong>
+              　自己資本比率: <strong style={{ color:C.text }}>{s.totalAssets > 0 ? ((s.equity/s.totalAssets)*100).toFixed(1) : "—"}%</strong><br/>
+              事業価値 = EPS×15×ROA×10×補正<br/>
+              資産価値 = BPS×0.7 − 有利子負債/株
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -192,7 +218,6 @@ export default function Home() {
   const [selected, setSelected]         = useState<string | null>(null);
   const [sortKey, setSortKey]           = useState("updown");
   const [sortAsc, setSortAsc]           = useState(false);
-  const [sortMode, setSortMode]         = useState<"fixed"|"auto">("fixed");
   const [editRR, setEditRR]             = useState<Record<string, boolean>>({});
   const [isMobile, setIsMobile]         = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -289,57 +314,30 @@ export default function Home() {
     setSearchText("");
   };
 
-  // 固定r方式
-  const resultsFixed: ValuationResult[] = useMemo(
+  const results: ValuationResult[] = useMemo(
     () => stocks.map(s => calcValuation(s, forecastYears, terminalG, false, payoutRatio)),
     [stocks, forecastYears, terminalG, payoutRatio]
   );
 
-  // 日経マネー式(ROA自動計算)
-  const resultsAuto: ValuationResult[] = useMemo(
-    () => stocks.map(s => calcValuation(s, forecastYears, terminalG, true, payoutRatio)),
-    [stocks, forecastYears, terminalG, payoutRatio]
-  );
-
   const filtered = useMemo(() => {
-    return resultsFixed.filter(s => {
+    return results.filter(s => {
       if (s.price <= 0 || s.bps <= 0) return true;
-      const pbr = s.price / s.bps;
+      const pbr = s.pbr;
       if (minPbr > 0 && pbr < minPbr) return false;
       if (maxPbr > 0 && pbr > maxPbr) return false;
       return true;
     });
-  }, [resultsFixed, minPbr, maxPbr]);
+  }, [results, minPbr, maxPbr]);
 
-  const filteredAuto = useMemo(() => {
-    return resultsAuto.filter(s => {
-      if (s.price <= 0 || s.bps <= 0) return true;
-      const pbr = s.price / s.bps;
-      if (minPbr > 0 && pbr < minPbr) return false;
-      if (maxPbr > 0 && pbr > maxPbr) return false;
-      return true;
-    });
-  }, [resultsAuto, minPbr, maxPbr]);
-
-  const sorted = useMemo(() => {
-    const base = sortMode === "fixed" ? filtered : filteredAuto;
-    return [...base].sort((a, b) => {
-      let va: number, vb: number;
-      if (sortKey === "updown")      { va = parseFloat(a.updownPct); vb = parseFloat(b.updownPct); }
-      else if (sortKey === "price")  { va = a.price; vb = b.price; }
-      else if (sortKey === "theory") { va = a.theoretical; vb = b.theoretical; }
-      else if (sortKey === "roe")    { va = a.roe; vb = b.roe; }
-      else                           { va = parseInt(a.code); vb = parseInt(b.code); }
-      return sortAsc ? va - vb : vb - va;
-    });
-  }, [filtered, filteredAuto, sortKey, sortAsc, sortMode]);
-
-  // sortedと同じ順番でauto側も並べる
-  const sortedAuto = useMemo(() => {
-    const codeOrder = sorted.map(s => s.code);
-    const autoMap = new Map(filteredAuto.map(s => [s.code, s]));
-    return codeOrder.map(code => autoMap.get(code)!).filter(Boolean);
-  }, [sorted, filteredAuto]);
+  const sorted = useMemo(() => [...filtered].sort((a, b) => {
+    let va: number, vb: number;
+    if (sortKey === "updown")      { va = parseFloat(a.updownPct); vb = parseFloat(b.updownPct); }
+    else if (sortKey === "price")  { va = a.price; vb = b.price; }
+    else if (sortKey === "theory") { va = a.theoretical; vb = b.theoretical; }
+    else if (sortKey === "roe")    { va = a.roe; vb = b.roe; }
+    else                           { va = parseInt(a.code); vb = parseInt(b.code); }
+    return sortAsc ? va - vb : vb - va;
+  }), [filtered, sortKey, sortAsc]);
 
   const handleSort = (key: string) => {
     if (sortKey === key) setSortAsc(!sortAsc);
@@ -352,8 +350,7 @@ export default function Home() {
     ));
   };
 
-  const selectedFixed = selected ? resultsFixed.find(r => r.code === selected) ?? null : null;
-  const selectedAuto  = selected ? resultsAuto.find(r => r.code === selected) ?? null : null;
+  const selectedResult = selected ? results.find(r => r.code === selected) ?? null : null;
 
   const Header = (
     <div style={{ position:"sticky", top:0, zIndex:50, borderBottom:`1px solid ${C.border}`, background:C.surface, padding:isMobile?"12px 16px":"16px 24px", display:"flex", alignItems:"center", gap:12 }}>
@@ -372,7 +369,7 @@ export default function Home() {
   const SettingsPanel = showSettings && (
     <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"14px 16px":"14px 24px", display:"flex", flexWrap:"wrap", gap:20, alignItems:"flex-start" }}>
       <div>
-        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>予測期間</div>
+        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>予測期間(RIM)</div>
         <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
           {[1,3,5,7,10,15].map(y => (
             <button key={y} onClick={() => setForecastYears(y)} style={{
@@ -406,35 +403,19 @@ export default function Home() {
           style={{ width:120, accentColor:C.accent }} />
       </div>
       <div>
-        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>ソート基準</div>
-        <div style={{ display:"flex", gap:6 }}>
-          {([["fixed","固定r方式"],["auto","日経マネー式"]] as const).map(([key,label]) => (
-            <button key={key} onClick={() => setSortMode(key)} style={{
-              padding:"5px 10px", borderRadius:6, border:"1px solid",
-              borderColor:sortMode===key?C.accent:C.border,
-              background:sortMode===key?"#1e3a6e":"transparent",
-              color:sortMode===key?"#93c5fd":C.muted,
-              cursor:"pointer", fontSize:11, fontWeight:600,
-            }}>{label}</button>
-          ))}
-        </div>
-      </div>
-      <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>PBRフィルター（0=無効）</div>
         <div style={{ display:"flex", gap:6, alignItems:"center" }}>
           <input type="number" min={0} max={20} step={0.1} value={minPbr||""} placeholder="最小"
             onChange={e => setMinPbr(parseFloat(e.target.value)||0)}
-            style={{ width:56, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }} />
+            style={{ width:52, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 6px", fontSize:12, textAlign:"center" }} />
           <span style={{ color:C.muted }}>〜</span>
           <input type="number" min={0} max={20} step={0.1} value={maxPbr||""} placeholder="最大"
             onChange={e => setMaxPbr(parseFloat(e.target.value)||0)}
-            style={{ width:56, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }} />
+            style={{ width:52, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 6px", fontSize:12, textAlign:"center" }} />
           <span style={{ color:C.muted, fontSize:12 }}>倍</span>
           {(minPbr>0||maxPbr>0) && (
             <button onClick={() => {setMinPbr(0);setMaxPbr(0);}}
-              style={{ background:C.border, border:"none", color:C.muted, cursor:"pointer", borderRadius:6, padding:"4px 8px", fontSize:11 }}>
-              リセット
-            </button>
+              style={{ background:C.border, border:"none", color:C.muted, cursor:"pointer", borderRadius:6, padding:"4px 8px", fontSize:11 }}>リセット</button>
           )}
         </div>
       </div>
@@ -464,7 +445,7 @@ export default function Home() {
   const MobileList = (
     <div style={{ padding:"12px 12px 100px" }}>
       <div style={{ display:"flex", gap:6, marginBottom:12, overflowX:"auto" }}>
-        {[{key:"updown",label:"乖離率"},{key:"theory",label:"理論株価"},{key:"price",label:"株価"},{key:"roe",label:"ROE"}].map(s => (
+        {[{key:"updown",label:"乖離率↓"},{key:"theory",label:"理論株価"},{key:"price",label:"株価"},{key:"roe",label:"ROE"}].map(s => (
           <button key={s.key} onClick={() => handleSort(s.key)} style={{
             flexShrink:0, padding:"6px 12px", borderRadius:20, border:"1px solid",
             borderColor:sortKey===s.key?C.accent:C.border,
@@ -476,12 +457,11 @@ export default function Home() {
       </div>
       {loading ? (
         <div style={{ textAlign:"center", color:C.muted, padding:40 }}>取得中…</div>
-      ) : sorted.map((s, idx) => {
-        const sA = sortedAuto[idx];
+      ) : sorted.map(s => {
         const rating = ratingInfo(s.updownPct);
         const isEdit = editRR[s.code];
         const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
-        const pbr = s.bps > 0 && s.price > 0 ? (s.price/s.bps).toFixed(2) : "—";
+        const pbr = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
         return (
           <div key={s.code} onClick={() => setSelected(selected===s.code?null:s.code)}
             style={{ background:C.surface, border:`1px solid`, borderColor:selected===s.code?C.accent:C.border, borderRadius:12, padding:"14px 16px", marginBottom:10, cursor:"pointer" }}>
@@ -505,20 +485,20 @@ export default function Home() {
               </div>
             </div>
 
-            {/* 2方式の理論株価を並べて表示 */}
+            {/* 2方式の理論株価を横並び */}
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
               <div style={{ background:C.bg, borderRadius:8, padding:"8px 10px", border:`1px solid ${C.border}` }}>
-                <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>理論株価（固定r={( s.requiredReturn*100).toFixed(1)}%）</div>
+                <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>RIM理論株価</div>
                 <div style={{ fontWeight:700, fontSize:14, color:"#93c5fd" }}>¥{fmt(s.theoretical)}</div>
-                <div style={{ fontSize:11, color:pctColor(s.updownPct) }}>
+                <div style={{ fontSize:11, color:pctColor(s.updownPct), fontWeight:700 }}>
                   {parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%
                 </div>
               </div>
-              <div style={{ background:C.bg, borderRadius:8, padding:"8px 10px", border:`1px solid #1e40af` }}>
-                <div style={{ fontSize:9, color:"#60a5fa", marginBottom:2 }}>日経マネー式（r={sA ? (sA.autoR*100).toFixed(1) : "—"}%）</div>
-                <div style={{ fontWeight:700, fontSize:14, color:"#93c5fd" }}>{sA ? `¥${fmt(sA.theoretical)}` : "—"}</div>
-                <div style={{ fontSize:11, color:sA ? pctColor(sA.updownPct) : C.muted }}>
-                  {sA ? `${parseFloat(sA.updownPct)>=0?"+":""}${sA.updownPct}%` : "—"}
+              <div style={{ background:C.bg, borderRadius:8, padding:"8px 10px", border:`1px solid #064e3b` }}>
+                <div style={{ fontSize:9, color:"#6ee7b7", marginBottom:2 }}>日経マネー式</div>
+                <div style={{ fontWeight:700, fontSize:14, color:"#34d399" }}>¥{fmt(s.nikkeiTheoretical)}</div>
+                <div style={{ fontSize:11, color:pctColor(s.nikkeiUpdownPct), fontWeight:700 }}>
+                  {parseFloat(s.nikkeiUpdownPct)>=0?"+":""}{s.nikkeiUpdownPct}%
                 </div>
               </div>
             </div>
@@ -558,20 +538,20 @@ export default function Home() {
         <thead>
           <tr>
             {[
-              { key:"code",    label:"コード / 銘柄",    align:"left" },
-              { key:"price",   label:"現在株価",         align:"right" },
-              { key:"theory",  label:"理論株価（固定r）", align:"right" },
-              { key:"updown",  label:"乖離率（固定r）",  align:"right" },
-              { key:"theory2", label:"日経マネー式",     align:"right" },
-              { key:"updown2", label:"乖離率（日経）",   align:"right" },
-              { key:"pbr",     label:"PBR",              align:"right" },
-              { key:"roe",     label:"ROE",              align:"right" },
-              { key:"rr",      label:"r(固定) ✎",       align:"right" },
-              { key:"rating",  label:"評価",             align:"center" },
+              { key:"code",    label:"コード / 銘柄",  align:"left" },
+              { key:"price",   label:"現在株価",       align:"right" },
+              { key:"theory",  label:"RIM理論株価",    align:"right" },
+              { key:"updown",  label:"乖離率(RIM)",    align:"right" },
+              { key:"nikkei",  label:"日経マネー式",   align:"right" },
+              { key:"nupdown", label:"乖離率(日経)",   align:"right" },
+              { key:"pbr",     label:"PBR",            align:"right" },
+              { key:"roe",     label:"ROE",            align:"right" },
+              { key:"rr",      label:"r ✎",           align:"right" },
+              { key:"rating",  label:"評価",           align:"center" },
             ].map(col => (
               <th key={col.key}
-                onClick={() => !["rr","rating","pbr","theory2","updown2"].includes(col.key) && handleSort(col.key)}
-                style={{ padding:"10px 10px", fontSize:9, letterSpacing:1, color:C.muted, fontWeight:700, textTransform:"uppercase" as const, cursor:!["rr","rating","pbr","theory2","updown2"].includes(col.key)?"pointer":"default", userSelect:"none" as const, borderBottom:`2px solid ${C.border}`, textAlign:col.align as "left"|"right"|"center", whiteSpace:"nowrap" as const }}
+                onClick={() => !["rr","rating","pbr","nikkei","nupdown"].includes(col.key) && handleSort(col.key)}
+                style={{ padding:"10px 10px", fontSize:9, letterSpacing:1, color:C.muted, fontWeight:700, textTransform:"uppercase" as const, cursor:!["rr","rating","pbr","nikkei","nupdown"].includes(col.key)?"pointer":"default", userSelect:"none" as const, borderBottom:`2px solid ${C.border}`, textAlign:col.align as "left"|"right"|"center", whiteSpace:"nowrap" as const }}
               >
                 {col.label}{sortKey===col.key?(sortAsc?" ↑":" ↓"):""}
               </th>
@@ -582,12 +562,11 @@ export default function Home() {
           {loading ? (
             <tr><td colSpan={10} style={{ padding:40, textAlign:"center", color:C.muted }}>取得中…</td></tr>
           ) : sorted.map((s, i) => {
-            const sA = sortedAuto[i];
             const rating = ratingInfo(s.updownPct);
             const isSel  = selected === s.code;
             const isEdit = editRR[s.code];
             const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
-            const pbr = s.bps > 0 && s.price > 0 ? (s.price/s.bps).toFixed(2) : "—";
+            const pbr = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
             return (
               <tr key={s.code} onClick={() => setSelected(isSel?null:s.code)}
                 style={{ borderBottom:`1px solid ${C.border}`, background:isSel?"#0d2040":i%2===0?"#0a1525":C.bg, cursor:"pointer" }}
@@ -609,11 +588,9 @@ export default function Home() {
                 <td style={{ padding:"10px 10px", textAlign:"right" }}>
                   <span style={{ color:pctColor(s.updownPct), fontWeight:800 }}>{parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%</span>
                 </td>
-                <td style={{ padding:"10px 10px", textAlign:"right", color:"#7dd3fc", fontWeight:700 }}>
-                  {sA ? `¥${fmt(sA.theoretical)}` : "—"}
-                </td>
+                <td style={{ padding:"10px 10px", textAlign:"right", color:"#34d399", fontWeight:700 }}>¥{fmt(s.nikkeiTheoretical)}</td>
                 <td style={{ padding:"10px 10px", textAlign:"right" }}>
-                  {sA && <span style={{ color:pctColor(sA.updownPct), fontWeight:800 }}>{parseFloat(sA.updownPct)>=0?"+":""}{sA.updownPct}%</span>}
+                  <span style={{ color:pctColor(s.nikkeiUpdownPct), fontWeight:800 }}>{parseFloat(s.nikkeiUpdownPct)>=0?"+":""}{s.nikkeiUpdownPct}%</span>
                 </td>
                 <td style={{ padding:"10px 10px", textAlign:"right", color:C.muted }}>{pbr}倍</td>
                 <td style={{ padding:"10px 10px", textAlign:"right", color:C.muted }}>{(s.roe*100).toFixed(1)}%</td>
@@ -622,7 +599,7 @@ export default function Home() {
                   {isEdit ? (
                     <input autoFocus type="number" min={1} max={30} step={0.5}
                       defaultValue={(s.requiredReturn*100).toFixed(1)}
-                      style={{ width:52, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:4, padding:"2px 6px", fontSize:12, textAlign:"right" }}
+                      style={{ width:48, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:4, padding:"2px 4px", fontSize:11, textAlign:"right" }}
                       onBlur={e => { updateRR(s.code, e.target.value); setEditRR(p=>({...p,[s.code]:false})); }}
                       onKeyDown={e => { if(e.key==="Enter"){ updateRR(s.code,(e.target as HTMLInputElement).value); setEditRR(p=>({...p,[s.code]:false})); }}}
                     />
@@ -647,9 +624,8 @@ export default function Home() {
         </div>
       )}
       <div style={{ padding:"12px 20px", borderTop:`1px solid ${C.border}`, fontSize:10, color:"#334155", lineHeight:1.8 }}>
-        ※ 表示中: {sorted.length}件 / {totalCount}銘柄　
-        ※ 固定r: 要求利回りを銘柄ごとに手動設定　
-        ※ 日経マネー式: r = ROA × 財務レバレッジ補正　
+        ※ 表示中: {sorted.length}件 / {totalCount}銘柄（東証プライム）　
+        ※ RIM: BPS + 残余利益PV　※ 日経マネー式: 事業価値(EPS×15×ROA×10×補正) + 資産価値(BPS×0.7)　
         ※ 株価はYahoo Financeより取得
       </div>
     </div>
@@ -663,16 +639,12 @@ export default function Home() {
       {isMobile ? (
         <>
           {MobileList}
-          {selectedFixed && selectedAuto && (
-            <DetailPanel s={selectedFixed} sAuto={selectedAuto} forecastYears={forecastYears} terminalG={terminalG} isMobile={true} onClose={() => setSelected(null)} />
-          )}
+          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} isMobile={true} onClose={() => setSelected(null)} />}
         </>
       ) : (
         <div style={{ display:"flex" }}>
           {DesktopTable}
-          {selectedFixed && selectedAuto && (
-            <DetailPanel s={selectedFixed} sAuto={selectedAuto} forecastYears={forecastYears} terminalG={terminalG} isMobile={false} onClose={() => setSelected(null)} />
-          )}
+          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} isMobile={false} onClose={() => setSelected(null)} />}
         </div>
       )}
     </div>
