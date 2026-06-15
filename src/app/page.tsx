@@ -1,7 +1,7 @@
-// src/app/page.tsx - Yahoo Finance リアルタイム株価対応版
+// src/app/page.tsx - サーバーサイド検索対応版
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { StockData, ValuationResult, calcValuation } from "@/lib/stocks";
 
 const FALLBACK: StockData[] = [
@@ -71,9 +71,8 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
         </div>
         <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>理論株価の構成（円/株）</div>
         {[
-          { label:"① 正味営業資産", val:s.netOperatingAssetsPS, color:"#818cf8" },
-          { label:"② 正味金融資産", val:s.netFinancialAssetsPS, color:"#34d399" },
-          { label:"③ 残余事業利益PV", val:s.pvREI, color:"#fbbf24" },
+          { label:"BPS（簿価）", val:s.bps, color:"#818cf8" },
+          { label:"残余事業利益PV", val:s.pvREI, color:"#fbbf24" },
         ].map(item => (
           <div key={item.label} style={{ marginBottom:12 }}>
             <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, fontSize:13 }}>
@@ -81,7 +80,7 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
               <span style={{ color:item.color, fontWeight:700 }}>{item.val>=0?"+":""}{fmt(item.val)}</span>
             </div>
             <div style={{ height:5, background:C.border, borderRadius:3 }}>
-              <div style={{ height:"100%", width:`${total>0?Math.abs(item.val)/total*100:0}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
+              <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(s.bps)+Math.abs(s.pvREI)))*100}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
             </div>
           </div>
         ))}
@@ -90,7 +89,7 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
             <span style={{ color:C.muted }}>理論株価</span>
             <span style={{ color:"#93c5fd" }}>¥{fmt(s.theoretical)}</span>
           </div>
-          <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>終端価値PV: ¥{fmt(s.terminalPV)}（③のうち）</div>
+          <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>終端価値PV: ¥{fmt(s.terminalPV)}（残余事業利益PVのうち）</div>
         </div>
         <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:8 }}>残余事業利益の年次明細</div>
         <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
@@ -119,7 +118,7 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
         <div style={{ margin:"18px 0", padding:12, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
           <div style={{ color:C.accent, marginBottom:4, fontSize:10 }}>計算前提</div>
           要求利回り: <strong style={{ color:C.text }}>{(s.requiredReturn*100).toFixed(1)}%</strong>　
-          終端成長率: <strong style={{ color:C.text }}>{(terminalG*100).toFixed(1)}%</strong><br/>
+          終端成長率: <strong style={{ color:C.text }}>2.0%</strong><br/>
           予測期間: <strong style={{ color:C.text }}>{forecastYears}年</strong>　
           データ基準日: <strong style={{ color:C.text }}>{s.priceDate ?? "—"}</strong>
         </div>
@@ -167,7 +166,6 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
-  // Yahoo Financeから株価を取得してstocksを更新
   const fetchYahooPrices = useCallback(async (currentStocks: StockData[]) => {
     setLoadingPrices(true);
     try {
@@ -185,7 +183,6 @@ export default function Home() {
           if (!p || !p.price) return s;
           return { ...s, price: p.price, previousClose: p.previousClose };
         });
-        // チャンク間に少し待機
         if (i + CHUNK < currentStocks.length) await new Promise(r => setTimeout(r, 500));
       }
       setStocks(updated);
@@ -197,316 +194,17 @@ export default function Home() {
     }
   }, []);
 
-  const fetchData = useCallback(async (sector: string, limit: number) => {
+  const fetchData = useCallback(async (sector: string, limit: number, search = "") => {
     setLoading(true);
     setApiError(false);
     try {
       const params = new URLSearchParams({ limit: String(limit) });
       if (sector !== "すべて") params.set("sector", sector);
+      if (search) params.set("search", search);
       const res  = await fetch(`/api/financials?${params}`);
       if (!res.ok) throw new Error();
       const data = await res.json();
       const merged: StockData[] = (data.stocks ?? [])
         .filter((s: StockData & { error?: string }) => !s.error)
         .map((s: StockData) => ({ ...s, requiredReturn: s.requiredReturn ?? 0.05 }));
-      if (merged.length === 0) { setApiError(true); setStocks(FALLBACK); }
-      else {
-        setStocks(merged);
-        setFetchedAt(data.fetchedAt);
-        // DBデータ取得後にYahoo Financeで株価を更新
-        fetchYahooPrices(merged);
-      }
-    } catch {
-      setApiError(true); setStocks(FALLBACK);
-    } finally {
-      setLoading(false); setLoadingMore(false);
-    }
-  }, [fetchYahooPrices]);
-
-  useEffect(() => { fetchData(selectedSector, displayLimit); }, [selectedSector, fetchData, displayLimit]);
-
-  const handleSectorChange = (sector: string) => {
-    setSelectedSector(sector);
-    setDisplayLimit(50);
-    setSelected(null);
-  };
-
-  const results: ValuationResult[] = useMemo(
-    () => stocks.map(s => calcValuation(s, forecastYears, terminalG)),
-    [stocks, forecastYears, terminalG]
-  );
-
-  const filtered = useMemo(() => {
-    if (!searchText) return results;
-    const q = searchText.toLowerCase();
-    return results.filter(s => s.name.toLowerCase().includes(q) || s.code.includes(q));
-  }, [results, searchText]);
-
-  const sorted = useMemo(() => [...filtered].sort((a, b) => {
-    let va: number, vb: number;
-    if (sortKey === "updown")      { va = parseFloat(a.updownPct); vb = parseFloat(b.updownPct); }
-    else if (sortKey === "price")  { va = a.price; vb = b.price; }
-    else if (sortKey === "theory") { va = a.theoretical; vb = b.theoretical; }
-    else if (sortKey === "roe")    { va = a.roe; vb = b.roe; }
-    else                           { va = parseInt(a.code); vb = parseInt(b.code); }
-    return sortAsc ? va - vb : vb - va;
-  }), [filtered, sortKey, sortAsc]);
-
-  const handleSort = (key: string) => {
-    if (sortKey === key) setSortAsc(!sortAsc);
-    else { setSortKey(key); setSortAsc(false); }
-  };
-
-  const updateRR = (code: string, val: string) => {
-    setStocks(prev => prev.map(s =>
-      s.code === code ? { ...s, requiredReturn: Math.max(0.01, Math.min(0.3, parseFloat(val)/100 || 0.05)) } : s
-    ));
-  };
-
-  const selectedResult = selected ? results.find(r => r.code === selected) ?? null : null;
-
-  const Header = (
-    <div style={{ position:"sticky", top:0, zIndex:50, borderBottom:`1px solid ${C.border}`, background:C.surface, padding:isMobile?"12px 16px":"16px 24px", display:"flex", alignItems:"center", gap:12 }}>
-      <div style={{ flex:1 }}>
-        <div style={{ fontSize:9, letterSpacing:3, color:C.accent }}>TOKYO PRIME · RIM</div>
-        <h1 style={{ margin:"2px 0 0", fontSize:isMobile?16:19, fontWeight:800, color:C.bright }}>理論株価アナリシス</h1>
-        <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>
-          {loading ? "取得中…" : apiError ? "⚠ デモデータ" : loadingPrices ? `${totalCount}銘柄 · 株価更新中…` : `${totalCount}銘柄 · ${fetchedAt ? new Date(fetchedAt).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})+"更新" : ""}`}
-        </div>
-      </div>
-      <button onClick={() => setShowSettings(!showSettings)} style={{ background:showSettings?C.accent:C.border, border:"none", color:C.bright, cursor:"pointer", borderRadius:8, padding:"6px 12px", fontSize:12, fontWeight:600 }}>⚙ 設定</button>
-      <button onClick={() => fetchData(selectedSector, displayLimit)} disabled={loading} style={{ background:"transparent", border:`1px solid ${C.accent}`, color:C.accent, cursor:"pointer", borderRadius:8, padding:"6px 10px", fontSize:12 }}>↻</button>
-    </div>
-  );
-
-  const SettingsPanel = showSettings && (
-    <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"14px 16px":"14px 24px", display:"flex", flexWrap:"wrap", gap:20, alignItems:"center" }}>
-      <div>
-        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>予測期間</div>
-        <div style={{ display:"flex", gap:5 }}>
-          {[1,2,3,4,5].map(y => (
-            <button key={y} onClick={() => setForecastYears(y)} style={{
-              width:isMobile?36:32, height:isMobile?36:30, borderRadius:6, border:"1px solid",
-              borderColor:forecastYears===y?C.accent:C.border,
-              background:forecastYears===y?"#1e3a6e":"transparent",
-              color:forecastYears===y?"#93c5fd":C.muted,
-              cursor:"pointer", fontSize:13, fontWeight:700,
-            }}>{y}</button>
-          ))}
-          <span style={{ lineHeight:isMobile?"36px":"30px", fontSize:12, color:C.muted }}>年</span>
-        </div>
-      </div>
-      <div>
-        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>
-          終端成長率: <strong style={{ color:"#93c5fd" }}>{(terminalG*100).toFixed(1)}%</strong>
-        </div>
-        <input type="range" min={0} max={5} step={0.5}
-          value={(terminalG*100).toFixed(1)}
-          onChange={e => setTerminalG(parseFloat(e.target.value)/100)}
-          style={{ width:isMobile?140:110, accentColor:C.accent }} />
-      </div>
-    </div>
-  );
-
-  const FilterBar = (
-    <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"10px 12px":"10px 24px" }}>
-      <input
-        type="text" placeholder="銘柄名・コードで検索..."
-        value={searchText} onChange={e => setSearchText(e.target.value)}
-        style={{ width:"100%", marginBottom:10, padding:"8px 12px", background:C.bg, border:`1px solid ${C.border}`, borderRadius:6, color:C.bright, fontSize:13, boxSizing:"border-box" as const }}
-      />
-      <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:4 }}>
-        {["すべて", ...allSectors].map(sector => (
-          <button key={sector} onClick={() => handleSectorChange(sector)} style={{
-            flexShrink:0, padding:"5px 12px", borderRadius:20, border:"1px solid",
-            borderColor:selectedSector===sector?C.accent:C.border,
-            background:selectedSector===sector?"#1e3a6e":"transparent",
-            color:selectedSector===sector?"#93c5fd":C.muted,
-            fontSize:11, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap",
-          }}>{sector}</button>
-        ))}
-      </div>
-    </div>
-  );
-
-  const MobileList = (
-    <div style={{ padding:"12px 12px 100px" }}>
-      <div style={{ display:"flex", gap:6, marginBottom:12, overflowX:"auto" }}>
-        {[{key:"updown",label:"乖離率"},{key:"theory",label:"理論株価"},{key:"price",label:"株価"},{key:"roe",label:"ROE"}].map(s => (
-          <button key={s.key} onClick={() => handleSort(s.key)} style={{
-            flexShrink:0, padding:"6px 12px", borderRadius:20, border:"1px solid",
-            borderColor:sortKey===s.key?C.accent:C.border,
-            background:sortKey===s.key?"#1e3a6e":"transparent",
-            color:sortKey===s.key?"#93c5fd":C.muted,
-            fontSize:12, fontWeight:600, cursor:"pointer",
-          }}>{s.label}{sortKey===s.key?(sortAsc?" ↑":" ↓"):""}</button>
-        ))}
-      </div>
-      {loading ? (
-        <div style={{ textAlign:"center", color:C.muted, padding:40 }}>取得中…</div>
-      ) : sorted.map(s => {
-        const rating = ratingInfo(s.updownPct);
-        const isEdit = editRR[s.code];
-        const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
-        return (
-          <div key={s.code} onClick={() => setSelected(selected===s.code?null:s.code)}
-            style={{ background:C.surface, border:`1px solid`, borderColor:selected===s.code?C.accent:C.border, borderRadius:12, padding:"14px 16px", marginBottom:10, cursor:"pointer" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
-              <div>
-                <span style={{ color:"#60a5fa", fontWeight:700, fontFamily:"monospace", marginRight:8, fontSize:12 }}>{s.code}</span>
-                <span style={{ color:C.bright, fontWeight:700, fontSize:15 }}>{s.name}</span>
-                <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{s.sector}</div>
-              </div>
-              <span style={{ color:rating.color, background:rating.bg, border:`1px solid ${rating.color}40`, borderRadius:6, padding:"3px 10px", fontSize:11, fontWeight:700, flexShrink:0, marginLeft:8 }}>{rating.label}</span>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
-              {[
-                { label:"現在株価", value: s.price > 0 ? `¥${fmt(s.price)}` : loadingPrices ? "取得中…" : "¥0", sub:`${parseFloat(changePct)>=0?"+":""}${changePct}%`, subColor:parseFloat(changePct)>=0?"#22d3a0":"#f87171" },
-                { label:"理論株価", value:`¥${fmt(s.theoretical)}`, sub:"", subColor:"#93c5fd" },
-                { label:"乖離率", value:`${parseFloat(s.updownPct)>=0?"+":""}${s.updownPct}%`, sub:"", subColor:pctColor(s.updownPct) },
-              ].map(item => (
-                <div key={item.label} style={{ background:C.bg, borderRadius:8, padding:"8px 10px" }}>
-                  <div style={{ fontSize:9, color:C.muted, marginBottom:3 }}>{item.label}</div>
-                  <div style={{ fontWeight:700, fontSize:13, color:item.subColor }}>{item.value}</div>
-                  {item.sub && <div style={{ fontSize:10, color:item.subColor, marginTop:2 }}>{item.sub}</div>}
-                </div>
-              ))}
-            </div>
-            <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" as const }}>
-              <span style={{ fontSize:11, color:C.muted }}>ROE: <strong style={{ color:C.text }}>{(s.roe*100).toFixed(1)}%</strong></span>
-              <span style={{ fontSize:11, color:C.muted }}>要求利回り: </span>
-              <span onClick={e => { e.stopPropagation(); setEditRR(p => ({ ...p, [s.code]:true })); }}>
-                {isEdit ? (
-                  <input autoFocus type="number" min={1} max={30} step={0.5}
-                    defaultValue={(s.requiredReturn*100).toFixed(1)}
-                    style={{ width:56, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:6, padding:"2px 6px", fontSize:12 }}
-                    onBlur={e => { updateRR(s.code, e.target.value); setEditRR(p => ({ ...p, [s.code]:false })); }}
-                    onKeyDown={e => { if(e.key==="Enter"){ updateRR(s.code,(e.target as HTMLInputElement).value); setEditRR(p=>({...p,[s.code]:false})); }}}
-                  />
-                ) : (
-                  <strong style={{ color:"#fbbf24", borderBottom:"1px dashed #4a5568", cursor:"pointer", fontSize:13 }}>{(s.requiredReturn*100).toFixed(1)}%</strong>
-                )}
-              </span>
-              <span style={{ marginLeft:"auto", fontSize:11, color:C.muted }}>詳細 →</span>
-            </div>
-          </div>
-        );
-      })}
-      {!loading && sorted.length >= displayLimit && (
-        <button onClick={() => { setLoadingMore(true); setDisplayLimit(d => d+50); }}
-          style={{ width:"100%", padding:"12px", background:C.surface, border:`1px solid ${C.border}`, color:C.accent, borderRadius:8, cursor:"pointer", fontSize:13, fontWeight:600 }}>
-          {loadingMore ? "取得中…" : "さらに50件表示"}
-        </button>
-      )}
-    </div>
-  );
-
-  const DesktopTable = (
-    <div style={{ flex:1, overflowX:"auto" }}>
-      <table style={{ width:"100%", borderCollapse:"collapse", minWidth:750 }}>
-        <thead>
-          <tr>
-            {[
-              { key:"code",   label:"コード / 銘柄", align:"left" },
-              { key:"price",  label:"現在株価",      align:"right" },
-              { key:"theory", label:"理論株価",      align:"right" },
-              { key:"updown", label:"乖離率",        align:"right" },
-              { key:"roe",    label:"予想ROE",       align:"right" },
-              { key:"rr",     label:"要求利回り ✎", align:"right" },
-              { key:"rating", label:"評価",          align:"center" },
-            ].map(col => (
-              <th key={col.key}
-                onClick={() => !["rr","rating"].includes(col.key) && handleSort(col.key)}
-                style={{ padding:"10px 14px", fontSize:10, letterSpacing:2, color:C.muted, fontWeight:700, textTransform:"uppercase" as const, cursor:!["rr","rating"].includes(col.key)?"pointer":"default", userSelect:"none" as const, borderBottom:`2px solid ${C.border}`, textAlign:col.align as "left"|"right"|"center", whiteSpace:"nowrap" as const }}
-              >
-                {col.label}{sortKey===col.key?(sortAsc?" ↑":" ↓"):""}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {loading ? (
-            <tr><td colSpan={7} style={{ padding:40, textAlign:"center", color:C.muted }}>取得中…</td></tr>
-          ) : sorted.map((s, i) => {
-            const rating = ratingInfo(s.updownPct);
-            const isSel  = selected === s.code;
-            const isEdit = editRR[s.code];
-            const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
-            return (
-              <tr key={s.code} onClick={() => setSelected(isSel?null:s.code)}
-                style={{ borderBottom:`1px solid ${C.border}`, background:isSel?"#0d2040":i%2===0?"#0a1525":C.bg, cursor:"pointer" }}
-                onMouseEnter={e => { if(!isSel) e.currentTarget.style.background="#0f1e35"; }}
-                onMouseLeave={e => { if(!isSel) e.currentTarget.style.background=i%2===0?"#0a1525":C.bg; }}
-              >
-                <td style={{ padding:"10px 14px" }}>
-                  <span style={{ color:"#60a5fa", fontWeight:700, fontFamily:"monospace", marginRight:8, fontSize:12 }}>{s.code}</span>
-                  <span style={{ color:C.bright, fontWeight:600 }}>{s.name}</span>
-                  <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{s.sector}</div>
-                </td>
-                <td style={{ padding:"10px 14px", textAlign:"right" }}>
-                  <div style={{ fontWeight:700 }}>
-                    {s.price > 0 ? `¥${fmt(s.price)}` : loadingPrices ? <span style={{ color:C.muted, fontSize:11 }}>取得中…</span> : "¥0"}
-                  </div>
-                  <div style={{ fontSize:10, color:parseFloat(changePct)>=0?"#22d3a0":"#f87171" }}>{parseFloat(changePct)>=0?"+":""}{changePct}%</div>
-                </td>
-                <td style={{ padding:"10px 14px", textAlign:"right", color:"#93c5fd", fontWeight:700 }}>¥{fmt(s.theoretical)}</td>
-                <td style={{ padding:"10px 14px", textAlign:"right" }}>
-                  <span style={{ color:pctColor(s.updownPct), fontWeight:800, fontSize:15 }}>{parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%</span>
-                </td>
-                <td style={{ padding:"10px 14px", textAlign:"right", color:C.muted }}>{(s.roe*100).toFixed(1)}%</td>
-                <td style={{ padding:"10px 14px", textAlign:"right" }}
-                  onClick={e => { e.stopPropagation(); setEditRR(p=>({...p,[s.code]:true})); }}>
-                  {isEdit ? (
-                    <input autoFocus type="number" min={1} max={30} step={0.5}
-                      defaultValue={(s.requiredReturn*100).toFixed(1)}
-                      style={{ width:56, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:4, padding:"2px 6px", fontSize:12, textAlign:"right" }}
-                      onBlur={e => { updateRR(s.code, e.target.value); setEditRR(p=>({...p,[s.code]:false})); }}
-                      onKeyDown={e => { if(e.key==="Enter"){ updateRR(s.code,(e.target as HTMLInputElement).value); setEditRR(p=>({...p,[s.code]:false})); }}}
-                    />
-                  ) : (
-                    <span style={{ color:"#fbbf24", fontWeight:700, borderBottom:"1px dashed #4a5568", cursor:"text" }}>{(s.requiredReturn*100).toFixed(1)}%</span>
-                  )}
-                </td>
-                <td style={{ padding:"10px 14px", textAlign:"center" }}>
-                  <span style={{ color:rating.color, background:rating.bg, border:`1px solid ${rating.color}40`, borderRadius:5, padding:"3px 10px", fontSize:11, fontWeight:700 }}>{rating.label}</span>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {!loading && sorted.length >= displayLimit && (
-        <div style={{ padding:"16px", textAlign:"center" }}>
-          <button onClick={() => { setLoadingMore(true); setDisplayLimit(d => d+50); }}
-            style={{ padding:"10px 32px", background:"transparent", border:`1px solid ${C.accent}`, color:C.accent, borderRadius:8, cursor:"pointer", fontSize:13, fontWeight:600 }}>
-            {loadingMore ? "取得中…" : "さらに50件表示"}
-          </button>
-        </div>
-      )}
-      <div style={{ padding:"12px 20px", borderTop:`1px solid ${C.border}`, fontSize:10, color:"#334155", lineHeight:1.8 }}>
-        ※ 表示中: {sorted.length}件 / {totalCount}銘柄（東証プライム）　
-        ※ 理論株価 = ①正味営業資産 + ②正味金融資産 + ③残余事業利益PV　
-        ※ 株価はYahoo Financeより取得（リアルタイム）
-      </div>
-    </div>
-  );
-
-  return (
-    <div style={{ minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"'Noto Sans JP', sans-serif", fontSize:13 }}>
-      {Header}
-      {SettingsPanel}
-      {FilterBar}
-      {isMobile ? (
-        <>
-          {MobileList}
-          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} isMobile={true} onClose={() => setSelected(null)} />}
-        </>
-      ) : (
-        <div style={{ display:"flex" }}>
-          {DesktopTable}
-          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} isMobile={false} onClose={() => setSelected(null)} />}
-        </div>
-      )}
-    </div>
-  );
-}
+      if
