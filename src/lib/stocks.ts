@@ -7,6 +7,7 @@ export interface StockData {
   previousClose: number;
   bps: number;
   eps: number;
+  nikkeiEps?: number;       // 日経マネー式EPS（予想経常利益×0.7÷株式数）
   roe: number;
   forecastROE: number[];
   totalAssets: number;
@@ -31,7 +32,6 @@ export interface ValuationResult extends StockData {
   pbr: number;
   roa: number;
   autoR: number;
-  // 日経マネー式
   nikkeiTheoretical: number;
   nikkeiUpdownPct: string;
   nikkeiBusinessValue: number;
@@ -46,12 +46,14 @@ const safe = (v: unknown): number =>
 // ── 日経マネー式 理論株価計算 ─────────────────────────────────────
 // 理論株価 = 事業価値 + 資産価値
 // 事業価値 = EPS × 15 × ROA × 10 × 財務レバレッジ補正
-// 資産価値 = BPS × 0.7 - 有利子負債/株
-// ROA = EPS ÷ (BPS ÷ 自己資本比率)
-// 財務レバレッジ補正:
-//   自己資本比率 < 33.4% → 1 ÷ (自己資本比率 + 0.5)
-//   自己資本比率 33.4〜66.7% → 1 ÷ (自己資本比率 + 0.333)
-//   自己資本比率 > 66.7% → 1 ÷ (自己資本比率 + 0.167)
+//   EPS = 予想経常利益 × 0.7 ÷ 発行済株式数（nikkeiEps）
+//   ROA = EPS ÷ (BPS ÷ 自己資本比率)
+//   財務レバレッジ補正:
+//     自己資本比率 < 33.4% → 1 ÷ (自己資本比率 + 0.5)
+//     33.4〜66.7% → 1 ÷ (自己資本比率 + 0.333)
+//     > 66.7% → 1 ÷ (自己資本比率 + 0.167)
+// 資産価値 = BPS × 0.7
+//   ※有利子負債はJ-Quantsから取得できないため除外
 function calcNikkeiMoney(stock: StockData): {
   theoretical: number;
   updownPct: string;
@@ -59,21 +61,30 @@ function calcNikkeiMoney(stock: StockData): {
   assetValue: number;
   roa: number;
 } {
-  const bps = safe(stock.bps);
-  const eps = safe(stock.eps);
-  const totalAssets = safe(stock.totalAssets);
-  const equity = safe(stock.equity);
-  const shares = safe(stock.shares);
+  const bps   = safe(stock.bps);
   const price = safe(stock.price);
 
+  // 日経マネー式EPS（予想経常利益×0.7÷株式数）
+  // なければ通常EPSで代用
+  const eps = safe(stock.nikkeiEps ?? 0) > 0
+    ? safe(stock.nikkeiEps)
+    : safe(stock.eps);
+
   if (bps <= 0 || eps <= 0) {
-    return { theoretical: 0, updownPct: "0.0", businessValue: 0, assetValue: bps * 0.7, roa: 0 };
+    return {
+      theoretical: Math.round(bps * 0.7),
+      updownPct: price > 0 ? ((bps * 0.7 / price - 1) * 100).toFixed(1) : "0.0",
+      businessValue: 0,
+      assetValue: Math.round(bps * 0.7),
+      roa: 0,
+    };
   }
 
-  // 自己資本比率
+  const totalAssets = safe(stock.totalAssets);
+  const equity      = safe(stock.equity);
   const equityRatio = totalAssets > 0 ? equity / totalAssets : 0.5;
 
-  // ROA = EPS ÷ (BPS ÷ 自己資本比率) = EPS × 自己資本比率 ÷ BPS
+  // ROA = EPS ÷ (BPS ÷ 自己資本比率)
   const roa = equityRatio > 0 ? eps * equityRatio / bps : 0;
 
   // 財務レバレッジ補正
@@ -89,19 +100,15 @@ function calcNikkeiMoney(stock: StockData): {
   // 事業価値 = EPS × 15 × ROA × 10 × 財務レバレッジ補正
   const businessValue = eps * 15 * roa * 10 * leverageAdj;
 
-  // 有利子負債/株（百万円→円）
-  const ibd = safe(stock.interestBearingDebt);
-  const ibdPerShare = shares > 0 ? (ibd / shares) * 1000 : 0;
-
-  // 資産価値 = BPS × 0.7 - 有利子負債/株
-  const assetValue = bps * 0.7 - ibdPerShare;
+  // 資産価値 = BPS × 0.7（有利子負債は取得不可のため除外）
+  const assetValue = bps * 0.7;
 
   const theoretical = Math.round(businessValue + assetValue);
   const updownPct = price > 0
     ? ((theoretical / price - 1) * 100).toFixed(1)
     : "0.0";
 
-  return { theoretical, updownPct, businessValue, assetValue, roa };
+  return { theoretical, updownPct, businessValue: Math.round(businessValue), assetValue: Math.round(assetValue), roa };
 }
 
 // ── RIMモデル 理論株価計算 ─────────────────────────────────────────
@@ -120,7 +127,12 @@ export function calcValuation(
     ? safe(stock.eps) * equityRatio / safe(stock.bps)
     : 0;
 
-  const leverageAdj = equityRatio > 0 ? 1 / (equityRatio + 0.333) : 1.2;
+  const leverageAdj = equityRatio > 0
+    ? (equityRatio < 0.334 ? 1 / (equityRatio + 0.5)
+      : equityRatio <= 0.667 ? 1 / (equityRatio + 0.333)
+      : 1 / (equityRatio + 0.167))
+    : 1.2;
+
   const autoR = roa * leverageAdj;
   const r = useAutoR && autoR > 0.01 && autoR < 0.5
     ? autoR
@@ -180,7 +192,6 @@ export function calcValuation(
     ? safe(stock.price) / safe(stock.bps)
     : 0;
 
-  // 日経マネー式を計算
   const nikkei = calcNikkeiMoney(stock);
 
   return {
@@ -195,9 +206,9 @@ export function calcValuation(
     pbr,
     roa,
     autoR,
-    nikkeiTheoretical:  nikkei.theoretical,
-    nikkeiUpdownPct:    nikkei.updownPct,
-    nikkeiBusinessValue: Math.round(nikkei.businessValue),
-    nikkeiAssetValue:   Math.round(nikkei.assetValue),
+    nikkeiTheoretical:   nikkei.theoretical,
+    nikkeiUpdownPct:     nikkei.updownPct,
+    nikkeiBusinessValue: nikkei.businessValue,
+    nikkeiAssetValue:    nikkei.assetValue,
   };
 }
