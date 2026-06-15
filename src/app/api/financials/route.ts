@@ -17,20 +17,28 @@ function convertRow(s: Record<string, unknown>) {
   const totalAssets = toNum(s.ta_raw)   / 1_000_000;
   const cash        = toNum(s.cash_raw) / 1_000_000;
   const netProfit   = toNum(s.np_raw)   / 1_000_000;
-  // 経常利益（来期予想優先、なければ今期）
-  const odp         = toNum(s.nxf_op_raw) > 0
-    ? toNum(s.nxf_op_raw)  / 1_000_000   // 来期予想営業利益
-    : toNum(s.odp_raw)     / 1_000_000;  // 今期経常利益
 
+  // 日経マネー式EPS用: 予想経常利益×0.7÷(発行済-自己株)
+  // 来期予想経常利益(nxf_odp)はDBになし → 今期経常利益(odp_raw)で代用
+  // 来期予想営業利益(nxf_op_raw)がある場合はそちらを優先
+  const odpRaw    = toNum(s.odp_raw)    / 1_000_000; // 今期経常利益
+  const nxfOpRaw  = toNum(s.nxf_op_raw) / 1_000_000; // 来期予想営業利益
+
+  // 発行済株式数（千株）: 自己株式を除く
   const shOut = toNum(s.sh_out_raw) / 1000;
+  const trSh  = toNum(s.tr_sh_raw)  / 1000;
   const avgSh = toNum(s.avg_sh_raw) / 1000;
 
   const bpsRaw = toNum(s.bps_raw);
   const epsRaw = toNum(s.eps_raw);
 
-  const shares = shOut > 0 ? shOut
+  // 自己株式控除後の発行済株式数（千株）
+  const sharesNet = shOut > 0 && trSh >= 0
+    ? shOut - trSh
     : avgSh > 0 ? avgSh
     : (bpsRaw > 0 && equity > 0 ? (equity / bpsRaw) * 1000 : 0);
+
+  const shares = sharesNet > 0 ? sharesNet : avgSh > 0 ? avgSh : sharesNet;
 
   const bps = bpsRaw > 0 ? bpsRaw
     : (shares > 1 ? (equity / shares) * 1000 : 0);
@@ -40,10 +48,11 @@ function convertRow(s: Record<string, unknown>) {
     ? (netProfit / shares) * 1000
     : epsRaw;
 
-  // 日経マネー式EPS = 予想経常利益(または営業利益) × 0.7 ÷ 株式数
-  // 経常利益がない場合は純利益ベースにフォールバック
-  const nikkeiEps = (odp > 0 && shares > 1)
-    ? (odp / shares) * 1000 * 0.7
+  // 日経マネー式EPS = 経常利益(または来期予想営業利益) × 0.7 ÷ (発行済-自己株)
+  // 優先順位: 来期予想営業利益 > 今期経常利益 > 通常EPS
+  const odpBase = nxfOpRaw > 0 ? nxfOpRaw : odpRaw;
+  const nikkeiEps = (odpBase > 0 && shares > 1)
+    ? (odpBase / shares) * 1000 * 0.7
     : eps;
 
   const roe = bps > 0 && eps !== 0 ? eps / bps
@@ -68,6 +77,7 @@ function convertRow(s: Record<string, unknown>) {
     cash,
     interestBearingDebt: 0,
     shares,
+    sharesGross: shOut, // 自己株式控除前（参考）
   };
 }
 
@@ -86,7 +96,8 @@ export async function GET(req: NextRequest) {
     "price", "previous_close", "price_date", "fin_date",
     "required_return", "updated_at",
     "ta_raw", "eq_raw", "cash_raw", "np_raw",
-    "sh_out_raw", "avg_sh_raw", "bps_raw", "eps_raw", "nxf_eps_raw",
+    "sh_out_raw", "tr_sh_raw", "avg_sh_raw",
+    "bps_raw", "eps_raw", "nxf_eps_raw",
     "odp_raw", "nxf_op_raw",
   ].join(",");
 
@@ -123,7 +134,7 @@ export async function GET(req: NextRequest) {
         finDate:              s.fin_date,
         bps:                  calc.bps,
         eps:                  calc.eps,
-        nikkeiEps:            calc.nikkeiEps,  // 日経マネー式EPS
+        nikkeiEps:            calc.nikkeiEps,
         roe:                  calc.roe,
         forecastROE:          calc.forecastROE,
         totalAssets:          calc.totalAssets,
