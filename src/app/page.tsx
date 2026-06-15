@@ -1,4 +1,4 @@
-// src/app/page.tsx - PBRフィルター追加版
+// src/app/page.tsx - 日経マネー式対応版
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
@@ -28,19 +28,20 @@ const C = {
   accent: "#3b82f6", muted: "#4a6080", text: "#cbd5e1", bright: "#e2f0ff",
 };
 
-function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
+function DetailPanel({ s, forecastYears, terminalG, useAutoR, isMobile, onClose }: {
   s: ValuationResult; forecastYears: number; terminalG: number;
-  isMobile: boolean; onClose: () => void;
+  useAutoR: boolean; isMobile: boolean; onClose: () => void;
 }) {
   const maxP = Math.max(s.price, s.theoretical) * 1.1;
   const pW   = (s.price / maxP) * 100;
   const tW   = (s.theoretical / maxP) * 100;
-  const pbr  = s.bps > 0 ? (s.price / s.bps).toFixed(2) : "—";
+  const pbr  = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
+  const rUsed = useAutoR && s.autoR > 0.01 ? s.autoR : s.requiredReturn;
 
   return (
     <div style={isMobile
       ? { position:"fixed", inset:0, zIndex:100, background:C.bg, overflowY:"auto", padding:"0 0 80px" }
-      : { width:320, flexShrink:0, borderLeft:`1px solid ${C.border}`, background:C.surface, overflowY:"auto", maxHeight:"calc(100vh - 72px)", position:"sticky", top:72 }
+      : { width:340, flexShrink:0, borderLeft:`1px solid ${C.border}`, background:C.surface, overflowY:"auto", maxHeight:"calc(100vh - 72px)", position:"sticky", top:72 }
     }>
       <div style={{ position:"sticky", top:0, zIndex:10, background:isMobile?C.bg:C.surface, borderBottom:`1px solid ${C.border}`, padding:"14px 18px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
         <div>
@@ -51,6 +52,7 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
         <button onClick={onClose} style={{ background:C.border, border:"none", color:C.text, cursor:"pointer", borderRadius:8, width:32, height:32 }}>✕</button>
       </div>
       <div style={{ padding:"18px 18px 0" }}>
+        {/* 株価バー */}
         <div style={{ marginBottom:20 }}>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:C.muted, marginBottom:6 }}>
             <span>現在株価</span><span style={{ color:"#93c5fd" }}>理論株価</span>
@@ -72,10 +74,12 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
             PBR: <strong style={{ color:C.text }}>{pbr}倍</strong>　BPS: <strong style={{ color:C.text }}>¥{fmt(s.bps)}</strong>
           </div>
         </div>
+
+        {/* 理論株価の内訳 */}
         <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>理論株価の構成（円/株）</div>
         {[
-          { label:"BPS（簿価）", val:s.bps, color:"#818cf8" },
-          { label:"残余事業利益PV", val:s.pvREI, color:"#fbbf24" },
+          { label:"BPS（簿価純資産）", val:s.bps, color:"#818cf8" },
+          { label:"残余利益PV", val:s.pvREI, color:"#fbbf24" },
         ].map(item => (
           <div key={item.label} style={{ marginBottom:12 }}>
             <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, fontSize:13 }}>
@@ -83,7 +87,7 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
               <span style={{ color:item.color, fontWeight:700 }}>{item.val>=0?"+":""}{fmt(item.val)}</span>
             </div>
             <div style={{ height:5, background:C.border, borderRadius:3 }}>
-              <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(s.bps)+Math.abs(s.pvREI)))*100}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
+              <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(s.bps)+Math.abs(s.pvREI)||1))*100}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
             </div>
           </div>
         ))}
@@ -92,13 +96,15 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
             <span style={{ color:C.muted }}>理論株価</span>
             <span style={{ color:"#93c5fd" }}>¥{fmt(s.theoretical)}</span>
           </div>
-          <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>終端価値PV: ¥{fmt(s.terminalPV)}（残余事業利益PVのうち）</div>
+          <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>終端価値PV: ¥{fmt(s.terminalPV)}（残余利益PVのうち）</div>
         </div>
-        <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:8 }}>残余事業利益の年次明細</div>
+
+        {/* 残余利益の年次明細 */}
+        <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:8 }}>残余利益の年次明細</div>
         <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
           <thead>
             <tr style={{ borderBottom:`1px solid ${C.border}` }}>
-              {["期","ROE","残余事業利益","PV"].map(h => (
+              {["期","ROE","残余利益","PV"].map(h => (
                 <th key={h} style={{ padding:"4px 4px", textAlign:"right", color:C.muted, fontWeight:600, fontSize:10 }}>{h}</th>
               ))}
             </tr>
@@ -118,11 +124,16 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
             </tr>
           </tbody>
         </table>
+
+        {/* 計算前提 */}
         <div style={{ margin:"18px 0", padding:12, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
           <div style={{ color:C.accent, marginBottom:4, fontSize:10 }}>計算前提</div>
-          要求利回り: <strong style={{ color:C.text }}>{(s.requiredReturn*100).toFixed(1)}%</strong>　
-          終端成長率: <strong style={{ color:C.text }}>2.0%</strong><br/>
-          予測期間: <strong style={{ color:C.text }}>{forecastYears}年</strong>　
+          株主資本コスト(r): <strong style={{ color:C.text }}>{(rUsed*100).toFixed(1)}%</strong>
+          {useAutoR && s.autoR > 0.01 && (
+            <span style={{ color:"#60a5fa", fontSize:10 }}> (ROAベース自動計算: ROA={( s.roa*100).toFixed(1)}%)</span>
+          )}<br/>
+          終端成長率: <strong style={{ color:C.text }}>{(terminalG*100).toFixed(1)}%</strong>　
+          予測期間: <strong style={{ color:C.text }}>{forecastYears}年</strong><br/>
           データ基準日: <strong style={{ color:C.text }}>{s.priceDate ?? "—"}</strong>
         </div>
       </div>
@@ -139,8 +150,10 @@ export default function Home() {
   const [loadingMore, setLoadingMore]   = useState(false);
   const [loadingPrices, setLoadingPrices] = useState(false);
   const [fetchedAt, setFetchedAt]       = useState<string | null>(null);
-  const [forecastYears, setForecastYears] = useState(5);
+  const [forecastYears, setForecastYears] = useState(10);
   const [terminalG, setTerminalG]       = useState(0.02);
+  const [useAutoR, setUseAutoR]         = useState(false);
+  const [payoutRatio, setPayoutRatio]   = useState(0.4);
   const [selected, setSelected]         = useState<string | null>(null);
   const [sortKey, setSortKey]           = useState("updown");
   const [sortAsc, setSortAsc]           = useState(false);
@@ -150,7 +163,6 @@ export default function Home() {
   const [totalCount, setTotalCount]     = useState(0);
   const [displayLimit, setDisplayLimit] = useState(50);
   const [apiError, setApiError]         = useState(false);
-  // PBRフィルター: 0=無効(全件表示)
   const [minPbr, setMinPbr]             = useState(0);
   const [maxPbr, setMaxPbr]             = useState(0);
 
@@ -242,15 +254,14 @@ export default function Home() {
   };
 
   const results: ValuationResult[] = useMemo(
-    () => stocks.map(s => calcValuation(s, forecastYears, terminalG)),
-    [stocks, forecastYears, terminalG]
+    () => stocks.map(s => calcValuation(s, forecastYears, terminalG, useAutoR, payoutRatio)),
+    [stocks, forecastYears, terminalG, useAutoR, payoutRatio]
   );
 
-  // PBRフィルター適用
   const filtered = useMemo(() => {
     return results.filter(s => {
-      if (s.price <= 0 || s.bps <= 0) return true; // 株価未取得はスキップしない
-      const pbr = s.price / s.bps;
+      if (s.price <= 0 || s.bps <= 0) return true;
+      const pbr = s.pbr;
       if (minPbr > 0 && pbr < minPbr) return false;
       if (maxPbr > 0 && pbr > maxPbr) return false;
       return true;
@@ -295,23 +306,24 @@ export default function Home() {
   );
 
   const SettingsPanel = showSettings && (
-    <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"14px 16px":"14px 24px", display:"flex", flexWrap:"wrap", gap:20, alignItems:"center" }}>
+    <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:isMobile?"14px 16px":"14px 24px", display:"flex", flexWrap:"wrap", gap:20, alignItems:"flex-start" }}>
       {/* 予測期間 */}
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>予測期間</div>
-        <div style={{ display:"flex", gap:5 }}>
-          {[1,2,3,4,5].map(y => (
+        <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
+          {[1,3,5,7,10,15].map(y => (
             <button key={y} onClick={() => setForecastYears(y)} style={{
-              width:isMobile?36:32, height:isMobile?36:30, borderRadius:6, border:"1px solid",
+              width:36, height:30, borderRadius:6, border:"1px solid",
               borderColor:forecastYears===y?C.accent:C.border,
               background:forecastYears===y?"#1e3a6e":"transparent",
               color:forecastYears===y?"#93c5fd":C.muted,
-              cursor:"pointer", fontSize:13, fontWeight:700,
+              cursor:"pointer", fontSize:12, fontWeight:700,
             }}>{y}</button>
           ))}
-          <span style={{ lineHeight:isMobile?"36px":"30px", fontSize:12, color:C.muted }}>年</span>
+          <span style={{ lineHeight:"30px", fontSize:12, color:C.muted }}>年</span>
         </div>
       </div>
+
       {/* 終端成長率 */}
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>
@@ -320,46 +332,78 @@ export default function Home() {
         <input type="range" min={0} max={5} step={0.5}
           value={(terminalG*100).toFixed(1)}
           onChange={e => setTerminalG(parseFloat(e.target.value)/100)}
-          style={{ width:isMobile?140:110, accentColor:C.accent }} />
+          style={{ width:120, accentColor:C.accent }} />
       </div>
+
+      {/* 配当性向（留保率） */}
+      <div>
+        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>
+          配当性向: <strong style={{ color:"#93c5fd" }}>{(payoutRatio*100).toFixed(0)}%</strong>
+          <span style={{ color:C.muted }}> (留保率{((1-payoutRatio)*100).toFixed(0)}%)</span>
+        </div>
+        <input type="range" min={0} max={80} step={5}
+          value={(payoutRatio*100).toFixed(0)}
+          onChange={e => setPayoutRatio(parseFloat(e.target.value)/100)}
+          style={{ width:120, accentColor:C.accent }} />
+      </div>
+
+      {/* 株主資本コスト */}
+      <div>
+        <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>株主資本コスト(r)</div>
+        <div style={{ display:"flex", gap:6 }}>
+          <button onClick={() => setUseAutoR(false)} style={{
+            padding:"5px 12px", borderRadius:6, border:"1px solid",
+            borderColor:!useAutoR?C.accent:C.border,
+            background:!useAutoR?"#1e3a6e":"transparent",
+            color:!useAutoR?"#93c5fd":C.muted,
+            cursor:"pointer", fontSize:11, fontWeight:600,
+          }}>固定値(銘柄別)</button>
+          <button onClick={() => setUseAutoR(true)} style={{
+            padding:"5px 12px", borderRadius:6, border:"1px solid",
+            borderColor:useAutoR?C.accent:C.border,
+            background:useAutoR?"#1e3a6e":"transparent",
+            color:useAutoR?"#93c5fd":C.muted,
+            cursor:"pointer", fontSize:11, fontWeight:600,
+          }}>ROA自動計算</button>
+        </div>
+        {useAutoR && (
+          <div style={{ fontSize:10, color:"#60a5fa", marginTop:4 }}>
+            r = ROA × 財務レバレッジ補正（日経マネー式）
+          </div>
+        )}
+      </div>
+
       {/* PBRフィルター */}
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>PBRフィルター（0=無効）</div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
             <span style={{ fontSize:9, color:C.muted }}>最小</span>
-            <input
-              type="number" min={0} max={20} step={0.1}
+            <input type="number" min={0} max={20} step={0.1}
               value={minPbr || ""}
               placeholder="0"
               onChange={e => setMinPbr(parseFloat(e.target.value) || 0)}
-              style={{ width:60, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }}
+              style={{ width:56, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }}
             />
           </div>
           <span style={{ color:C.muted, fontSize:12, marginTop:14 }}>〜</span>
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
             <span style={{ fontSize:9, color:C.muted }}>最大</span>
-            <input
-              type="number" min={0} max={20} step={0.1}
+            <input type="number" min={0} max={20} step={0.1}
               value={maxPbr || ""}
               placeholder="0"
               onChange={e => setMaxPbr(parseFloat(e.target.value) || 0)}
-              style={{ width:60, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }}
+              style={{ width:56, background:C.bg, border:`1px solid ${C.border}`, color:C.bright, borderRadius:6, padding:"4px 8px", fontSize:13, textAlign:"center" }}
             />
           </div>
           <span style={{ color:C.muted, fontSize:12, marginTop:14 }}>倍</span>
           {(minPbr > 0 || maxPbr > 0) && (
-            <button
-              onClick={() => { setMinPbr(0); setMaxPbr(0); }}
-              style={{ background:C.border, border:"none", color:C.muted, cursor:"pointer", borderRadius:6, padding:"4px 8px", fontSize:11, marginTop:14 }}
-            >リセット</button>
+            <button onClick={() => { setMinPbr(0); setMaxPbr(0); }}
+              style={{ background:C.border, border:"none", color:C.muted, cursor:"pointer", borderRadius:6, padding:"4px 8px", fontSize:11, marginTop:14 }}>
+              リセット
+            </button>
           )}
         </div>
-        {(minPbr > 0 || maxPbr > 0) && (
-          <div style={{ fontSize:10, color:"#fbbf24", marginTop:4 }}>
-            PBR {minPbr > 0 ? `${minPbr}倍以上` : ""}{minPbr > 0 && maxPbr > 0 ? "・" : ""}{maxPbr > 0 ? `${maxPbr}倍以下` : ""} の銘柄を表示中
-          </div>
-        )}
       </div>
     </div>
   );
@@ -404,7 +448,8 @@ export default function Home() {
         const rating = ratingInfo(s.updownPct);
         const isEdit = editRR[s.code];
         const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
-        const pbr = s.bps > 0 && s.price > 0 ? (s.price / s.bps).toFixed(2) : "—";
+        const pbr = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
+        const rUsed = useAutoR && s.autoR > 0.01 ? s.autoR : s.requiredReturn;
         return (
           <div key={s.code} onClick={() => setSelected(selected===s.code?null:s.code)}
             style={{ background:C.surface, border:`1px solid`, borderColor:selected===s.code?C.accent:C.border, borderRadius:12, padding:"14px 16px", marginBottom:10, cursor:"pointer" }}>
@@ -432,8 +477,8 @@ export default function Home() {
             <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" as const }}>
               <span style={{ fontSize:11, color:C.muted }}>PBR: <strong style={{ color:C.text }}>{pbr}倍</strong></span>
               <span style={{ fontSize:11, color:C.muted }}>ROE: <strong style={{ color:C.text }}>{(s.roe*100).toFixed(1)}%</strong></span>
-              <span onClick={e => { e.stopPropagation(); setEditRR(p => ({ ...p, [s.code]:true })); }}>
-                {isEdit ? (
+              <span onClick={e => { e.stopPropagation(); if(!useAutoR) setEditRR(p => ({ ...p, [s.code]:true })); }}>
+                {!useAutoR && isEdit ? (
                   <input autoFocus type="number" min={1} max={30} step={0.5}
                     defaultValue={(s.requiredReturn*100).toFixed(1)}
                     style={{ width:56, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:6, padding:"2px 6px", fontSize:12 }}
@@ -441,7 +486,9 @@ export default function Home() {
                     onKeyDown={e => { if(e.key==="Enter"){ updateRR(s.code,(e.target as HTMLInputElement).value); setEditRR(p=>({...p,[s.code]:false})); }}}
                   />
                 ) : (
-                  <strong style={{ color:"#fbbf24", borderBottom:"1px dashed #4a5568", cursor:"pointer", fontSize:13 }}>{(s.requiredReturn*100).toFixed(1)}%</strong>
+                  <strong style={{ color:"#fbbf24", borderBottom:useAutoR?"none":"1px dashed #4a5568", cursor:useAutoR?"default":"pointer", fontSize:13 }}>
+                    r={((rUsed)*100).toFixed(1)}%
+                  </strong>
                 )}
               </span>
               <span style={{ marginLeft:"auto", fontSize:11, color:C.muted }}>詳細 →</span>
@@ -469,8 +516,8 @@ export default function Home() {
               { key:"theory", label:"理論株価",      align:"right" },
               { key:"updown", label:"乖離率",        align:"right" },
               { key:"pbr",    label:"PBR",           align:"right" },
-              { key:"roe",    label:"予想ROE",       align:"right" },
-              { key:"rr",     label:"要求利回り ✎", align:"right" },
+              { key:"roe",    label:"ROE",           align:"right" },
+              { key:"rr",     label:"r(株主資本コスト)", align:"right" },
               { key:"rating", label:"評価",          align:"center" },
             ].map(col => (
               <th key={col.key}
@@ -490,7 +537,8 @@ export default function Home() {
             const isSel  = selected === s.code;
             const isEdit = editRR[s.code];
             const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
-            const pbr = s.bps > 0 && s.price > 0 ? (s.price / s.bps).toFixed(2) : "—";
+            const pbr = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
+            const rUsed = useAutoR && s.autoR > 0.01 ? s.autoR : s.requiredReturn;
             return (
               <tr key={s.code} onClick={() => setSelected(isSel?null:s.code)}
                 style={{ borderBottom:`1px solid ${C.border}`, background:isSel?"#0d2040":i%2===0?"#0a1525":C.bg, cursor:"pointer" }}
@@ -515,16 +563,19 @@ export default function Home() {
                 <td style={{ padding:"10px 14px", textAlign:"right", color:C.muted }}>{pbr}倍</td>
                 <td style={{ padding:"10px 14px", textAlign:"right", color:C.muted }}>{(s.roe*100).toFixed(1)}%</td>
                 <td style={{ padding:"10px 14px", textAlign:"right" }}
-                  onClick={e => { e.stopPropagation(); setEditRR(p=>({...p,[s.code]:true})); }}>
-                  {isEdit ? (
+                  onClick={e => { e.stopPropagation(); if(!useAutoR) setEditRR(p=>({...p,[s.code]:true})); }}>
+                  {!useAutoR && isEdit ? (
                     <input autoFocus type="number" min={1} max={30} step={0.5}
-                      defaultValue={(s.requiredReturn*100).toFixed(1)}
+                      defaultValue={(rUsed*100).toFixed(1)}
                       style={{ width:56, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:4, padding:"2px 6px", fontSize:12, textAlign:"right" }}
                       onBlur={e => { updateRR(s.code, e.target.value); setEditRR(p=>({...p,[s.code]:false})); }}
                       onKeyDown={e => { if(e.key==="Enter"){ updateRR(s.code,(e.target as HTMLInputElement).value); setEditRR(p=>({...p,[s.code]:false})); }}}
                     />
                   ) : (
-                    <span style={{ color:"#fbbf24", fontWeight:700, borderBottom:"1px dashed #4a5568", cursor:"text" }}>{(s.requiredReturn*100).toFixed(1)}%</span>
+                    <span style={{ color:"#fbbf24", fontWeight:700, borderBottom:useAutoR?"none":"1px dashed #4a5568", cursor:useAutoR?"default":"text" }}>
+                      {(rUsed*100).toFixed(1)}%
+                      {useAutoR && <span style={{ fontSize:9, color:"#60a5fa", marginLeft:2 }}>自動</span>}
+                    </span>
                   )}
                 </td>
                 <td style={{ padding:"10px 14px", textAlign:"center" }}>
@@ -545,8 +596,8 @@ export default function Home() {
       )}
       <div style={{ padding:"12px 20px", borderTop:`1px solid ${C.border}`, fontSize:10, color:"#334155", lineHeight:1.8 }}>
         ※ 表示中: {sorted.length}件 / {totalCount}銘柄（東証プライム）　
-        ※ 理論株価 = BPS + 残余事業利益PV（簡易RIMモデル）　
-        ※ 株価はYahoo Financeより取得（リアルタイム）
+        ※ 理論株価 = BPS + 残余利益PV（日経マネー式残余利益モデル）　
+        ※ 株価はYahoo Financeより取得
       </div>
     </div>
   );
@@ -559,12 +610,12 @@ export default function Home() {
       {isMobile ? (
         <>
           {MobileList}
-          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} isMobile={true} onClose={() => setSelected(null)} />}
+          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} useAutoR={useAutoR} isMobile={true} onClose={() => setSelected(null)} />}
         </>
       ) : (
         <div style={{ display:"flex" }}>
           {DesktopTable}
-          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} isMobile={false} onClose={() => setSelected(null)} />}
+          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} useAutoR={useAutoR} isMobile={false} onClose={() => setSelected(null)} />}
         </div>
       )}
     </div>
