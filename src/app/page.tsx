@@ -1,4 +1,4 @@
-// src/app/page.tsx - 日経マネー式並列表示版
+// src/app/page.tsx - 日経マネー誌参考値CSV対応版
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
@@ -11,6 +11,14 @@ const FALLBACK: StockData[] = [
   { code:"7974",name:"任天堂",sector:"その他製品",price:9344,previousClose:9200,bps:2340,eps:239,roe:0.102,forecastROE:[0.102,0.095,0.090,0.085,0.080],totalAssets:3398515,equity:2724327,cash:1414121,interestBearingDebt:0,shares:1164248,requiredReturn:0.05},
   { code:"8306",name:"三菱UFJフィナンシャル",sector:"銀行業",price:1680,previousClose:1660,bps:1523,eps:196,roe:0.129,forecastROE:[0.129,0.120,0.110,0.100,0.090],totalAssets:437290000,equity:18450000,cash:68320000,interestBearingDebt:89100000,shares:12130000,requiredReturn:0.05},
 ];
+
+// 日経マネー誌の参考値
+interface NikkeiRef {
+  theoretical: number;
+  price: number;
+  divergence: string;
+  evaluation: string;
+}
 
 const fmt = (n: number) => Math.round(n).toLocaleString("ja-JP");
 const pctColor = (pct: string) => parseFloat(pct) >= 0 ? "#22d3a0" : "#f87171";
@@ -28,15 +36,16 @@ const C = {
   accent: "#3b82f6", muted: "#4a6080", text: "#cbd5e1", bright: "#e2f0ff",
 };
 
-function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
-  s: ValuationResult; forecastYears: number; terminalG: number;
+function DetailPanel({ s, nikkeiRef, forecastYears, terminalG, isMobile, onClose }: {
+  s: ValuationResult; nikkeiRef: NikkeiRef | null;
+  forecastYears: number; terminalG: number;
   isMobile: boolean; onClose: () => void;
 }) {
   const [tab, setTab] = useState<"rim"|"nikkei">("rim");
-  const maxP = Math.max(s.price, s.theoretical, s.nikkeiTheoretical) * 1.1 || 1;
+  const maxP = Math.max(s.price, s.theoretical, nikkeiRef?.theoretical ?? 0) * 1.1 || 1;
   const pW   = (s.price / maxP) * 100;
   const rimW = (s.theoretical / maxP) * 100;
-  const nikW = (s.nikkeiTheoretical / maxP) * 100;
+  const nikW = ((nikkeiRef?.theoretical ?? 0) / maxP) * 100;
   const pbr  = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
 
   return (
@@ -55,7 +64,7 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
 
       {/* タブ */}
       <div style={{ display:"flex", borderBottom:`1px solid ${C.border}` }}>
-        {([["rim","RIMモデル"],["nikkei","日経マネー式"]] as const).map(([key,label]) => (
+        {([["rim","RIMモデル"],["nikkei","日経マネー誌"]] as const).map(([key,label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             flex:1, padding:"10px", border:"none", cursor:"pointer",
             background:tab===key?"#1e3a6e":"transparent",
@@ -67,18 +76,18 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
       </div>
 
       <div style={{ padding:"18px 18px 0" }}>
-        {/* 2方式比較バー */}
+        {/* 3方式比較バー */}
         <div style={{ marginBottom:20 }}>
           <div style={{ fontSize:10, color:C.muted, marginBottom:8 }}>株価 vs 理論株価の比較</div>
           {[
             { label:"現在株価", w:pW, color:"#60a5fa", val:s.price },
             { label:"RIM理論株価", w:rimW, color:"#93c5fd", val:s.theoretical },
-            { label:"日経マネー式", w:nikW, color:"#34d399", val:s.nikkeiTheoretical },
+            { label:"日経マネー誌(参考)", w:nikW, color:"#34d399", val:nikkeiRef?.theoretical ?? 0 },
           ].map(item => (
             <div key={item.label} style={{ marginBottom:6 }}>
               <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:C.muted, marginBottom:2 }}>
                 <span>{item.label}</span>
-                <span style={{ color:item.color }}>¥{fmt(item.val)}</span>
+                <span style={{ color:item.color }}>{item.val > 0 ? `¥${fmt(item.val)}` : "—"}</span>
               </div>
               <div style={{ height:6, background:C.border, borderRadius:3 }}>
                 <div style={{ height:"100%", width:`${Math.min(item.w,100)}%`, background:item.color, borderRadius:3 }} />
@@ -87,22 +96,31 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
           ))}
         </div>
 
-        {/* 2方式の乖離率比較 */}
+        {/* 2方式比較カード */}
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:20 }}>
-          {[
-            { label:"RIMモデル", val:s.theoretical, pct:s.updownPct, note:`r=${(s.requiredReturn*100).toFixed(1)}%`, active:tab==="rim" },
-            { label:"日経マネー式", val:s.nikkeiTheoretical, pct:s.nikkeiUpdownPct, note:`ROA=${(s.roa*100).toFixed(1)}%`, active:tab==="nikkei" },
-          ].map(item => (
-            <div key={item.label} onClick={() => setTab(item.label==="RIMモデル"?"rim":"nikkei")}
-              style={{ background:item.active?"#0d2040":C.bg, border:`1px solid ${item.active?C.accent:C.border}`, borderRadius:8, padding:"10px 12px", cursor:"pointer" }}>
-              <div style={{ fontSize:9, color:item.active?C.accent:C.muted, marginBottom:4, fontWeight:700 }}>{item.label}</div>
-              <div style={{ fontWeight:800, fontSize:15, color:"#93c5fd" }}>¥{fmt(item.val)}</div>
-              <div style={{ fontSize:12, color:pctColor(item.pct), marginTop:2, fontWeight:700 }}>
-                {parseFloat(item.pct)>=0?"+":""}{item.pct}%
-              </div>
-              <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{item.note}</div>
+          <div onClick={() => setTab("rim")}
+            style={{ background:tab==="rim"?"#0d2040":C.bg, border:`1px solid ${tab==="rim"?C.accent:C.border}`, borderRadius:8, padding:"10px 12px", cursor:"pointer" }}>
+            <div style={{ fontSize:9, color:tab==="rim"?C.accent:C.muted, marginBottom:4, fontWeight:700 }}>RIMモデル</div>
+            <div style={{ fontWeight:800, fontSize:15, color:"#93c5fd" }}>¥{fmt(s.theoretical)}</div>
+            <div style={{ fontSize:12, color:pctColor(s.updownPct), marginTop:2, fontWeight:700 }}>
+              {parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%
             </div>
-          ))}
+            <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>r={( s.requiredReturn*100).toFixed(1)}%</div>
+          </div>
+          <div onClick={() => setTab("nikkei")}
+            style={{ background:tab==="nikkei"?"#0d2040":C.bg, border:`1px solid ${tab==="nikkei"?C.accent:C.border}`, borderRadius:8, padding:"10px 12px", cursor:"pointer" }}>
+            <div style={{ fontSize:9, color:tab==="nikkei"?"#6ee7b7":C.muted, marginBottom:4, fontWeight:700 }}>日経マネー誌(参考)</div>
+            {nikkeiRef?.theoretical ? (
+              <>
+                <div style={{ fontWeight:800, fontSize:15, color:"#34d399" }}>¥{fmt(nikkeiRef.theoretical)}</div>
+                <div style={{ fontSize:12, color:nikkeiRef.evaluation==="+"?"#22d3a0":"#f87171", marginTop:2, fontWeight:700 }}>
+                  {nikkeiRef.divergence}
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>掲載なし</div>
+            )}
+          </div>
         </div>
 
         <div style={{ textAlign:"center", fontSize:11, color:C.muted, marginBottom:16 }}>
@@ -160,42 +178,38 @@ function DetailPanel({ s, forecastYears, terminalG, isMobile, onClose }: {
             </table>
             <div style={{ margin:"14px 0", padding:10, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
               <div style={{ color:C.accent, marginBottom:2, fontSize:10 }}>計算前提</div>
-              r(要求利回り): <strong style={{ color:C.text }}>{(s.requiredReturn*100).toFixed(1)}%</strong>　
-              終端成長率: <strong style={{ color:C.text }}>{(terminalG*100).toFixed(1)}%</strong><br/>
+              r: <strong style={{ color:C.text }}>{(s.requiredReturn*100).toFixed(1)}%</strong>　
+              終端成長率: <strong style={{ color:C.text }}>{(terminalG*100).toFixed(1)}%</strong>　
               予測期間: <strong style={{ color:C.text }}>{forecastYears}年</strong>
             </div>
           </>
         ) : (
           <>
-            <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>日経マネー式の内訳</div>
-            {[
-              { label:"事業価値 (EPS×15×ROA×10×レバレッジ補正)", val:s.nikkeiBusinessValue, color:"#fbbf24" },
-              { label:"資産価値 (BPS×0.7 − 有利子負債/株)", val:s.nikkeiAssetValue, color:"#818cf8" },
-            ].map(item => (
-              <div key={item.label} style={{ marginBottom:12 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, fontSize:12 }}>
-                  <span style={{ color:C.muted, fontSize:10 }}>{item.label}</span>
-                  <span style={{ color:item.color, fontWeight:700 }}>{item.val>=0?"+":""}{fmt(item.val)}</span>
+            <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>日経マネー誌 掲載値（参考）</div>
+            {nikkeiRef?.theoretical ? (
+              <div style={{ padding:14, background:C.bg, borderRadius:8, marginBottom:16 }}>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                  {[
+                    { label:"理論株価", val:`¥${fmt(nikkeiRef.theoretical)}`, color:"#34d399" },
+                    { label:"掲載時株価", val:`¥${fmt(nikkeiRef.price)}`, color:C.text },
+                    { label:"乖離率", val:nikkeiRef.divergence, color:nikkeiRef.evaluation==="+"?"#22d3a0":"#f87171" },
+                    { label:"評価", val:nikkeiRef.evaluation==="+"?"割安":"割高", color:nikkeiRef.evaluation==="+"?"#22d3a0":"#f87171" },
+                  ].map(item => (
+                    <div key={item.label}>
+                      <div style={{ fontSize:9, color:C.muted, marginBottom:3 }}>{item.label}</div>
+                      <div style={{ fontWeight:700, color:item.color }}>{item.val}</div>
+                    </div>
+                  ))}
                 </div>
-                <div style={{ height:5, background:C.border, borderRadius:3 }}>
-                  <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(s.nikkeiBusinessValue)+Math.abs(s.nikkeiAssetValue)||1))*100}%`, background:item.color, borderRadius:3, opacity:0.75 }} />
+                <div style={{ marginTop:12, padding:8, background:"#0a1525", borderRadius:6, fontSize:10, color:C.muted }}>
+                  ※ 日経マネー2026年7月号別冊付録「理論株価リスト」掲載値。計算式・基準日が当アプリと異なります。
                 </div>
               </div>
-            ))}
-            <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:10, marginBottom:16 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, fontWeight:800 }}>
-                <span style={{ color:C.muted }}>日経マネー式理論株価</span>
-                <span style={{ color:"#34d399" }}>¥{fmt(s.nikkeiTheoretical)}</span>
+            ) : (
+              <div style={{ padding:20, textAlign:"center", color:C.muted, fontSize:12 }}>
+                この銘柄の掲載データがありません
               </div>
-            </div>
-            <div style={{ padding:12, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
-              <div style={{ color:C.accent, marginBottom:4, fontSize:10 }}>計算詳細</div>
-              EPS: <strong style={{ color:C.text }}>¥{fmt(s.eps)}</strong><br/>
-              ROA: <strong style={{ color:C.text }}>{(s.roa*100).toFixed(1)}%</strong>
-              　自己資本比率: <strong style={{ color:C.text }}>{s.totalAssets > 0 ? ((s.equity/s.totalAssets)*100).toFixed(1) : "—"}%</strong><br/>
-              事業価値 = EPS×15×ROA×10×補正<br/>
-              資産価値 = BPS×0.7 − 有利子負債/株
-            </div>
+            )}
           </>
         )}
       </div>
@@ -226,6 +240,31 @@ export default function Home() {
   const [apiError, setApiError]         = useState(false);
   const [minPbr, setMinPbr]             = useState(0);
   const [maxPbr, setMaxPbr]             = useState(0);
+  const [nikkeiMap, setNikkeiMap]       = useState<Map<string, NikkeiRef>>(new Map());
+
+  // 日経マネー誌CSVの読み込み
+  useEffect(() => {
+    fetch("/nikkei_prices.csv")
+      .then(r => r.text())
+      .then(text => {
+        const lines = text.split("\n").slice(1); // ヘッダーをスキップ
+        const map = new Map<string, NikkeiRef>();
+        for (const line of lines) {
+          const cols = line.split(",");
+          if (cols.length < 7) continue;
+          const code = cols[0].trim();
+          const theoretical = parseFloat(cols[3]);
+          const price = parseFloat(cols[4]);
+          const divergence = cols[5].trim();
+          const evaluation = cols[6].trim();
+          if (code && !isNaN(theoretical)) {
+            map.set(code, { theoretical, price, divergence, evaluation });
+          }
+        }
+        setNikkeiMap(map);
+      })
+      .catch(() => {}); // CSV未配置でもエラーにしない
+  }, []);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -351,6 +390,7 @@ export default function Home() {
   };
 
   const selectedResult = selected ? results.find(r => r.code === selected) ?? null : null;
+  const selectedNikkei = selected ? nikkeiMap.get(selected) ?? null : null;
 
   const Header = (
     <div style={{ position:"sticky", top:0, zIndex:50, borderBottom:`1px solid ${C.border}`, background:C.surface, padding:isMobile?"12px 16px":"16px 24px", display:"flex", alignItems:"center", gap:12 }}>
@@ -395,7 +435,6 @@ export default function Home() {
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>
           配当性向: <strong style={{ color:"#93c5fd" }}>{(payoutRatio*100).toFixed(0)}%</strong>
-          <span style={{ color:C.muted }}> (留保率{((1-payoutRatio)*100).toFixed(0)}%)</span>
         </div>
         <input type="range" min={0} max={80} step={5}
           value={(payoutRatio*100).toFixed(0)}
@@ -462,6 +501,7 @@ export default function Home() {
         const isEdit = editRR[s.code];
         const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
         const pbr = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
+        const nk = nikkeiMap.get(s.code);
         return (
           <div key={s.code} onClick={() => setSelected(selected===s.code?null:s.code)}
             style={{ background:C.surface, border:`1px solid`, borderColor:selected===s.code?C.accent:C.border, borderRadius:12, padding:"14px 16px", marginBottom:10, cursor:"pointer" }}>
@@ -485,7 +525,7 @@ export default function Home() {
               </div>
             </div>
 
-            {/* 2方式の理論株価を横並び */}
+            {/* RIM + 日経マネー誌を横並び */}
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
               <div style={{ background:C.bg, borderRadius:8, padding:"8px 10px", border:`1px solid ${C.border}` }}>
                 <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>RIM理論株価</div>
@@ -495,11 +535,17 @@ export default function Home() {
                 </div>
               </div>
               <div style={{ background:C.bg, borderRadius:8, padding:"8px 10px", border:`1px solid #064e3b` }}>
-                <div style={{ fontSize:9, color:"#6ee7b7", marginBottom:2 }}>日経マネー式</div>
-                <div style={{ fontWeight:700, fontSize:14, color:"#34d399" }}>¥{fmt(s.nikkeiTheoretical)}</div>
-                <div style={{ fontSize:11, color:pctColor(s.nikkeiUpdownPct), fontWeight:700 }}>
-                  {parseFloat(s.nikkeiUpdownPct)>=0?"+":""}{s.nikkeiUpdownPct}%
-                </div>
+                <div style={{ fontSize:9, color:"#6ee7b7", marginBottom:2 }}>日経マネー誌(参考)</div>
+                {nk?.theoretical ? (
+                  <>
+                    <div style={{ fontWeight:700, fontSize:14, color:"#34d399" }}>¥{fmt(nk.theoretical)}</div>
+                    <div style={{ fontSize:11, color:nk.evaluation==="+"?"#22d3a0":"#f87171", fontWeight:700 }}>
+                      {nk.divergence}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>掲載なし</div>
+                )}
               </div>
             </div>
 
@@ -538,16 +584,16 @@ export default function Home() {
         <thead>
           <tr>
             {[
-              { key:"code",    label:"コード / 銘柄",  align:"left" },
-              { key:"price",   label:"現在株価",       align:"right" },
-              { key:"theory",  label:"RIM理論株価",    align:"right" },
-              { key:"updown",  label:"乖離率(RIM)",    align:"right" },
-              { key:"nikkei",  label:"日経マネー式",   align:"right" },
-              { key:"nupdown", label:"乖離率(日経)",   align:"right" },
-              { key:"pbr",     label:"PBR",            align:"right" },
-              { key:"roe",     label:"ROE",            align:"right" },
-              { key:"rr",      label:"r ✎",           align:"right" },
-              { key:"rating",  label:"評価",           align:"center" },
+              { key:"code",    label:"コード / 銘柄",      align:"left" },
+              { key:"price",   label:"現在株価",           align:"right" },
+              { key:"theory",  label:"RIM理論株価",        align:"right" },
+              { key:"updown",  label:"乖離率(RIM)",        align:"right" },
+              { key:"nikkei",  label:"日経マネー誌(参考)", align:"right" },
+              { key:"nupdown", label:"乖離率(日経)",       align:"right" },
+              { key:"pbr",     label:"PBR",                align:"right" },
+              { key:"roe",     label:"ROE",                align:"right" },
+              { key:"rr",      label:"r ✎",               align:"right" },
+              { key:"rating",  label:"評価",               align:"center" },
             ].map(col => (
               <th key={col.key}
                 onClick={() => !["rr","rating","pbr","nikkei","nupdown"].includes(col.key) && handleSort(col.key)}
@@ -567,6 +613,7 @@ export default function Home() {
             const isEdit = editRR[s.code];
             const changePct = s.previousClose > 0 ? ((s.price-s.previousClose)/s.previousClose*100).toFixed(2) : "0.00";
             const pbr = s.pbr > 0 ? s.pbr.toFixed(2) : "—";
+            const nk = nikkeiMap.get(s.code);
             return (
               <tr key={s.code} onClick={() => setSelected(isSel?null:s.code)}
                 style={{ borderBottom:`1px solid ${C.border}`, background:isSel?"#0d2040":i%2===0?"#0a1525":C.bg, cursor:"pointer" }}
@@ -588,9 +635,13 @@ export default function Home() {
                 <td style={{ padding:"10px 10px", textAlign:"right" }}>
                   <span style={{ color:pctColor(s.updownPct), fontWeight:800 }}>{parseFloat(s.updownPct)>=0?"+":""}{s.updownPct}%</span>
                 </td>
-                <td style={{ padding:"10px 10px", textAlign:"right", color:"#34d399", fontWeight:700 }}>¥{fmt(s.nikkeiTheoretical)}</td>
+                <td style={{ padding:"10px 10px", textAlign:"right", color:"#34d399", fontWeight:700 }}>
+                  {nk?.theoretical ? `¥${fmt(nk.theoretical)}` : <span style={{ color:C.muted }}>—</span>}
+                </td>
                 <td style={{ padding:"10px 10px", textAlign:"right" }}>
-                  <span style={{ color:pctColor(s.nikkeiUpdownPct), fontWeight:800 }}>{parseFloat(s.nikkeiUpdownPct)>=0?"+":""}{s.nikkeiUpdownPct}%</span>
+                  {nk?.divergence ? (
+                    <span style={{ color:nk.evaluation==="+"?"#22d3a0":"#f87171", fontWeight:700 }}>{nk.divergence}</span>
+                  ) : <span style={{ color:C.muted }}>—</span>}
                 </td>
                 <td style={{ padding:"10px 10px", textAlign:"right", color:C.muted }}>{pbr}倍</td>
                 <td style={{ padding:"10px 10px", textAlign:"right", color:C.muted }}>{(s.roe*100).toFixed(1)}%</td>
@@ -624,8 +675,9 @@ export default function Home() {
         </div>
       )}
       <div style={{ padding:"12px 20px", borderTop:`1px solid ${C.border}`, fontSize:10, color:"#334155", lineHeight:1.8 }}>
-        ※ 表示中: {sorted.length}件 / {totalCount}銘柄（東証プライム）　
-        ※ RIM: BPS + 残余利益PV　※ 日経マネー式: 事業価値(EPS×15×ROA×10×補正) + 資産価値(BPS×0.7)　
+        ※ 表示中: {sorted.length}件 / {totalCount}銘柄　
+        ※ RIM: BPS + 残余利益PV　
+        ※ 日経マネー誌: 2026年7月号別冊付録掲載値（参考）　
         ※ 株価はYahoo Financeより取得
       </div>
     </div>
@@ -639,12 +691,16 @@ export default function Home() {
       {isMobile ? (
         <>
           {MobileList}
-          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} isMobile={true} onClose={() => setSelected(null)} />}
+          {selectedResult && (
+            <DetailPanel s={selectedResult} nikkeiRef={selectedNikkei} forecastYears={forecastYears} terminalG={terminalG} isMobile={true} onClose={() => setSelected(null)} />
+          )}
         </>
       ) : (
         <div style={{ display:"flex" }}>
           {DesktopTable}
-          {selectedResult && <DetailPanel s={selectedResult} forecastYears={forecastYears} terminalG={terminalG} isMobile={false} onClose={() => setSelected(null)} />}
+          {selectedResult && (
+            <DetailPanel s={selectedResult} nikkeiRef={selectedNikkei} forecastYears={forecastYears} terminalG={terminalG} isMobile={false} onClose={() => setSelected(null)} />
+          )}
         </div>
       )}
     </div>
