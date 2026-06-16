@@ -13,7 +13,7 @@ export interface StockData {
   totalAssets: number;
   equity: number;
   cash: number;
-  interestBearingDebt: number;
+  interestBearingDebt: number;  // 推計有利子負債（百万円）
   shares: number;
   requiredReturn: number;
   lastUpdated?: string;
@@ -36,7 +36,8 @@ export interface ValuationResult extends StockData {
   nikkeiUpdownPct: string;
   nikkeiBusinessValue: number;
   nikkeiAssetValue: number;
-  assetAdjRatio: number; // 実際に使用した補正係数（確認用）
+  nikkeiIbdPerShare: number;   // 推計有利子負債/株（確認用）
+  assetAdjRatio: number;       // 資産価値補正係数（確認用）
 }
 
 export const PRIME_STOCKS_LIST: { code: string; name: string; sector: string; yahoo: string }[] = [];
@@ -45,15 +46,17 @@ const safe = (v: unknown): number =>
   typeof v === "number" && isFinite(v) ? v : 0;
 
 // ── 日経マネー式 理論株価計算 ─────────────────────────────────────
-// 資産価値 = BPS × 0.7 × min(自己資本比率 × k, 1.0)
-// k=2: 自己資本比率50%で補正1.0（デフォルト）
-// k=1: 補正なし（有利子負債を無視）
-// k=4: 自己資本比率25%で補正1.0（より強い割引）
-function calcNikkeiMoney(stock: StockData, assetAdjK: number = 2.0): {
+// 理論株価 = 事業価値 + 資産価値
+// 事業価値 = EPS × 15 × ROA × 10 × 財務レバレッジ補正
+// 資産価値 = max(BPS × 0.7 - 推計有利子負債/株, 0)
+//   推計有利子負債 = max(0, (総負債 - 現金) × ibdK)
+//   ibdK: 調整係数（デフォルト0.6）
+function calcNikkeiMoney(stock: StockData, ibdK: number = 0.6): {
   theoretical: number;
   updownPct: string;
   businessValue: number;
   assetValue: number;
+  ibdPerShare: number;
   assetAdjRatio: number;
   roa: number;
 } {
@@ -64,25 +67,29 @@ function calcNikkeiMoney(stock: StockData, assetAdjK: number = 2.0): {
     ? safe(stock.nikkeiEps)
     : safe(stock.eps);
 
+  const totalAssets = safe(stock.totalAssets);
+  const equity      = safe(stock.equity);
+  const cash        = safe(stock.cash);
+  const shares      = safe(stock.shares);
+  const equityRatio = totalAssets > 0 ? equity / totalAssets : 0.5;
+
+  // 推計有利子負債/株（百万円→円）
+  const totalDebt    = totalAssets - equity;
+  const estimatedIBD = Math.max(0, (totalDebt - cash) * ibdK);
+  const ibdPerShare  = shares > 0 ? (estimatedIBD / shares) * 1000 : 0;
+
   if (bps <= 0 || eps <= 0) {
-    const assetAdjRatio = Math.min(
-      (safe(stock.totalAssets) > 0 ? safe(stock.equity) / safe(stock.totalAssets) : 0.5) * assetAdjK,
-      1.0
-    );
-    const assetValue = bps * 0.7 * assetAdjRatio;
+    const assetValue = Math.max(bps * 0.7 - ibdPerShare, 0);
     return {
       theoretical: Math.round(assetValue),
       updownPct: price > 0 ? ((assetValue / price - 1) * 100).toFixed(1) : "0.0",
       businessValue: 0,
       assetValue: Math.round(assetValue),
-      assetAdjRatio,
+      ibdPerShare: Math.round(ibdPerShare),
+      assetAdjRatio: bps > 0 ? assetValue / (bps * 0.7) : 0,
       roa: 0,
     };
   }
-
-  const totalAssets = safe(stock.totalAssets);
-  const equity      = safe(stock.equity);
-  const equityRatio = totalAssets > 0 ? equity / totalAssets : 0.5;
 
   // ROA = EPS ÷ (BPS ÷ 自己資本比率)
   const roa = equityRatio > 0 ? eps * equityRatio / bps : 0;
@@ -100,16 +107,24 @@ function calcNikkeiMoney(stock: StockData, assetAdjK: number = 2.0): {
   // 事業価値
   const businessValue = eps * 15 * roa * 10 * leverageAdj;
 
-  // 資産価値（リニア補正）
-  const assetAdjRatio = Math.min(equityRatio * assetAdjK, 1.0);
-  const assetValue = bps * 0.7 * assetAdjRatio;
+  // 資産価値 = max(BPS × 0.7 - 推計有利子負債/株, 0)
+  const assetValue = Math.max(bps * 0.7 - ibdPerShare, 0);
+  const assetAdjRatio = bps > 0 ? assetValue / (bps * 0.7) : 0;
 
   const theoretical = Math.round(businessValue + assetValue);
   const updownPct = price > 0
     ? ((theoretical / price - 1) * 100).toFixed(1)
     : "0.0";
 
-  return { theoretical, updownPct, businessValue: Math.round(businessValue), assetValue: Math.round(assetValue), assetAdjRatio, roa };
+  return {
+    theoretical,
+    updownPct,
+    businessValue: Math.round(businessValue),
+    assetValue:    Math.round(assetValue),
+    ibdPerShare:   Math.round(ibdPerShare),
+    assetAdjRatio,
+    roa,
+  };
 }
 
 // ── RIMモデル 理論株価計算 ─────────────────────────────────────────
@@ -119,7 +134,7 @@ export function calcValuation(
   terminalGrowthRate: number,
   useAutoR: boolean = false,
   payoutRatio: number = 0.4,
-  assetAdjK: number = 2.0,
+  ibdK: number = 0.6,
 ): ValuationResult {
   const equityRatio = safe(stock.totalAssets) > 0
     ? safe(stock.equity) / safe(stock.totalAssets)
@@ -194,7 +209,7 @@ export function calcValuation(
     ? safe(stock.price) / safe(stock.bps)
     : 0;
 
-  const nikkei = calcNikkeiMoney(stock, assetAdjK);
+  const nikkei = calcNikkeiMoney(stock, ibdK);
 
   return {
     ...stock,
@@ -212,6 +227,7 @@ export function calcValuation(
     nikkeiUpdownPct:     nikkei.updownPct,
     nikkeiBusinessValue: nikkei.businessValue,
     nikkeiAssetValue:    nikkei.assetValue,
+    nikkeiIbdPerShare:   nikkei.ibdPerShare,
     assetAdjRatio:       nikkei.assetAdjRatio,
   };
 }
