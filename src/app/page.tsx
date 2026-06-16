@@ -97,7 +97,7 @@ function DetailPanel({ s, nikkeiRef, forecastYears, terminalG, ibdK, isMobile, o
 
         {tab === "nikkei_calc" && (
           <>
-            <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>日経マネー式 計算値</div>
+            <div style={{ fontSize:10, color:C.accent, letterSpacing:2, marginBottom:10 }}>はっしゃん式（日経マネー62p）計算値</div>
             <div style={{ textAlign:"center", marginBottom:16 }}>
               <div style={{ fontSize:28, fontWeight:800, color:"#34d399" }}>¥{fmt(s.nikkeiTheoretical)}</div>
               <div style={{ fontSize:16, color:pctColor(s.nikkeiUpdownPct), fontWeight:700, marginTop:4 }}>
@@ -105,28 +105,35 @@ function DetailPanel({ s, nikkeiRef, forecastYears, terminalG, ibdK, isMobile, o
               </div>
             </div>
             {[
-              { label:"事業価値 (EPS×15×ROA×10×補正)", val:s.nikkeiBusinessValue, color:"#fbbf24" },
-              { label:"資産価値 (BPS×0.7 - 推計IBD/株)",  val:s.nikkeiAssetValue,    color:"#818cf8" },
+              { label:"A. 事業価値 (EPS×15×ROA×10×補正)", val:s.nikkeiBusinessValue,  color:"#fbbf24" },
+              { label:"B. 資産価値 (BPS×割引評価率)",       val:s.nikkeiAssetValue,     color:"#818cf8" },
+              { label:"C. 市場リスク (PBR低い場合のみ減額)",val:-s.nikkeiMarketRisk,    color:"#f87171" },
             ].map(item => (
-              <div key={item.label} style={{ marginBottom:12 }}>
+              <div key={item.label} style={{ marginBottom:10 }}>
                 <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, fontSize:12 }}>
                   <span style={{ color:C.muted, fontSize:10 }}>{item.label}</span>
-                  <span style={{ color:item.color, fontWeight:700 }}>{item.val>=0?"+":""}{fmt(item.val)}</span>
+                  <span style={{ color:item.color, fontWeight:700 }}>
+                    {item.val >= 0 ? "+" : ""}{fmt(item.val)}
+                  </span>
                 </div>
-                <div style={{ height:5, background:C.border, borderRadius:3 }}>
-                  <div style={{ height:"100%", width:`${(Math.abs(item.val)/(Math.abs(s.nikkeiBusinessValue)+Math.abs(s.nikkeiAssetValue)||1))*100}%`, background:item.color, borderRadius:3, opacity:0.8 }} />
+                <div style={{ height:4, background:C.border, borderRadius:3 }}>
+                  <div style={{ height:"100%", width:`${Math.min(Math.abs(item.val)/(Math.abs(s.nikkeiBusinessValue)+Math.abs(s.nikkeiAssetValue)||1)*100,100)}%`, background:item.color, borderRadius:3, opacity:0.8 }} />
                 </div>
               </div>
             ))}
-            <div style={{ padding:10, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2, marginTop:8 }}>
+            <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:8, marginBottom:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, fontWeight:800 }}>
+                <span style={{ color:C.muted }}>理論株価</span>
+                <span style={{ color:"#34d399" }}>¥{fmt(s.nikkeiTheoretical)}</span>
+              </div>
+            </div>
+            <div style={{ padding:10, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
               <div style={{ color:C.accent, marginBottom:2, fontSize:10 }}>計算詳細</div>
               EPS(経常×0.7/株): <strong style={{ color:C.text }}>¥{s.nikkeiEps ? fmt(s.nikkeiEps) : "—"}</strong><br/>
-              ROA: <strong style={{ color:C.text }}>{(s.roa*100).toFixed(1)}%</strong>　
+              ROA(上限30%): <strong style={{ color:C.text }}>{(Math.min(s.roa,0.3)*100).toFixed(1)}%</strong>　
               自己資本比率: <strong style={{ color:C.text }}>{s.totalAssets>0?((s.equity/s.totalAssets)*100).toFixed(1):"—"}%</strong><br/>
-              推計IBD/株: <strong style={{ color:"#f87171" }}>¥{fmt(s.nikkeiIbdPerShare)}</strong>
-              <span style={{ fontSize:9, color:C.muted }}> ((総負債-現金)×{ibdK}÷株数)</span><br/>
-              BPS×0.7: <strong style={{ color:C.text }}>¥{fmt(Math.round(s.bps*0.7))}</strong>　→　
-              資産価値: <strong style={{ color:"#818cf8" }}>¥{fmt(s.nikkeiAssetValue)}</strong>
+              資産割引率: <strong style={{ color:"#818cf8" }}>{(s.assetAdjRatio*100).toFixed(0)}%</strong>　
+              市場リスク: <strong style={{ color:"#f87171" }}>{s.nikkeiMarketRisk > 0 ? `¥${fmt(s.nikkeiMarketRisk)}` : "なし(PBR≥0.5)"}</strong>
             </div>
           </>
         )}
@@ -462,9 +469,7 @@ export default function Home() {
           value={ibdK}
           onChange={e => setIbdK(parseFloat(e.target.value))}
           style={{ width:120, accentColor:"#f87171" }} />
-        <div style={{ fontSize:9, color:C.muted, marginTop:3 }}>
-          k=0: 補正なし　k=0.6: 標準　k=1.0: 最大割引
-        </div>
+        <div style={{ fontSize:9, color:C.muted, marginTop:3 }}>k=0: 補正なし　k=0.6: 標準　k=1.0: 最大</div>
       </div>
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>PBRフィルター（0=無効）</div>
@@ -701,7 +706,7 @@ export default function Home() {
       )}
       <div style={{ padding:"12px 20px", borderTop:`1px solid ${C.border}`, fontSize:10, color:"#334155", lineHeight:1.8 }}>
         ※ 表示中: {sorted.length}件 / {totalCount}銘柄　
-        ※ 日経マネー計算値: 事業価値 + max(BPS×0.7 - 推計IBD/株, 0)　推計IBD係数k={ibdK}
+        ※ 日経マネー計算値: 事業価値+資産価値-市場リスク（はっしゃん式・日経マネー62p）　
         ※ 誌面掲載値: 日経マネー2026年7月号別冊付録（参考）　株価はYahoo Financeより取得
       </div>
     </div>
