@@ -36,6 +36,7 @@ export interface ValuationResult extends StockData {
   nikkeiUpdownPct: string;
   nikkeiBusinessValue: number;
   nikkeiAssetValue: number;
+  assetAdjRatio: number; // 実際に使用した補正係数（確認用）
 }
 
 export const PRIME_STOCKS_LIST: { code: string; name: string; sector: string; yahoo: string }[] = [];
@@ -44,15 +45,16 @@ const safe = (v: unknown): number =>
   typeof v === "number" && isFinite(v) ? v : 0;
 
 // ── 日経マネー式 理論株価計算 ─────────────────────────────────────
-// 理論株価 = 事業価値 + 資産価値
-// 事業価値 = EPS × 15 × ROA × 10 × 財務レバレッジ補正
-// 資産価値 = BPS × 0.7 × 自己資本比率補正
-//   ※有利子負債が取得できないため自己資本比率で有利子負債の多さを推計
-function calcNikkeiMoney(stock: StockData): {
+// 資産価値 = BPS × 0.7 × min(自己資本比率 × k, 1.0)
+// k=2: 自己資本比率50%で補正1.0（デフォルト）
+// k=1: 補正なし（有利子負債を無視）
+// k=4: 自己資本比率25%で補正1.0（より強い割引）
+function calcNikkeiMoney(stock: StockData, assetAdjK: number = 2.0): {
   theoretical: number;
   updownPct: string;
   businessValue: number;
   assetValue: number;
+  assetAdjRatio: number;
   roa: number;
 } {
   const bps   = safe(stock.bps);
@@ -63,12 +65,17 @@ function calcNikkeiMoney(stock: StockData): {
     : safe(stock.eps);
 
   if (bps <= 0 || eps <= 0) {
-    const assetValue = bps * 0.7;
+    const assetAdjRatio = Math.min(
+      (safe(stock.totalAssets) > 0 ? safe(stock.equity) / safe(stock.totalAssets) : 0.5) * assetAdjK,
+      1.0
+    );
+    const assetValue = bps * 0.7 * assetAdjRatio;
     return {
       theoretical: Math.round(assetValue),
       updownPct: price > 0 ? ((assetValue / price - 1) * 100).toFixed(1) : "0.0",
       businessValue: 0,
       assetValue: Math.round(assetValue),
+      assetAdjRatio,
       roa: 0,
     };
   }
@@ -93,22 +100,8 @@ function calcNikkeiMoney(stock: StockData): {
   // 事業価値
   const businessValue = eps * 15 * roa * 10 * leverageAdj;
 
-  // 資産価値の補正（自己資本比率で有利子負債の多さを推計）
-  // 自己資本比率が低いほど有利子負債が多い → 資産価値を強く割り引く
-  let assetAdjRatio: number;
-  if (equityRatio >= 0.667) {
-    // 無借金に近い → 補正なし
-    assetAdjRatio = 1.0;
-  } else if (equityRatio >= 0.5) {
-    // 50〜67% → 0.8〜1.0
-    assetAdjRatio = 0.8 + (equityRatio - 0.5) / 0.167 * 0.2;
-  } else if (equityRatio >= 0.334) {
-    // 33〜50% → 0.5〜0.8
-    assetAdjRatio = 0.5 + (equityRatio - 0.334) / 0.166 * 0.3;
-  } else {
-    // 33%未満 → 0〜0.5（強い割引）
-    assetAdjRatio = Math.max(0, equityRatio / 0.334 * 0.5);
-  }
+  // 資産価値（リニア補正）
+  const assetAdjRatio = Math.min(equityRatio * assetAdjK, 1.0);
   const assetValue = bps * 0.7 * assetAdjRatio;
 
   const theoretical = Math.round(businessValue + assetValue);
@@ -116,13 +109,7 @@ function calcNikkeiMoney(stock: StockData): {
     ? ((theoretical / price - 1) * 100).toFixed(1)
     : "0.0";
 
-  return {
-    theoretical,
-    updownPct,
-    businessValue: Math.round(businessValue),
-    assetValue:    Math.round(assetValue),
-    roa,
-  };
+  return { theoretical, updownPct, businessValue: Math.round(businessValue), assetValue: Math.round(assetValue), assetAdjRatio, roa };
 }
 
 // ── RIMモデル 理論株価計算 ─────────────────────────────────────────
@@ -132,6 +119,7 @@ export function calcValuation(
   terminalGrowthRate: number,
   useAutoR: boolean = false,
   payoutRatio: number = 0.4,
+  assetAdjK: number = 2.0,
 ): ValuationResult {
   const equityRatio = safe(stock.totalAssets) > 0
     ? safe(stock.equity) / safe(stock.totalAssets)
@@ -206,7 +194,7 @@ export function calcValuation(
     ? safe(stock.price) / safe(stock.bps)
     : 0;
 
-  const nikkei = calcNikkeiMoney(stock);
+  const nikkei = calcNikkeiMoney(stock, assetAdjK);
 
   return {
     ...stock,
@@ -224,5 +212,6 @@ export function calcValuation(
     nikkeiUpdownPct:     nikkei.updownPct,
     nikkeiBusinessValue: nikkei.businessValue,
     nikkeiAssetValue:    nikkei.assetValue,
+    assetAdjRatio:       nikkei.assetAdjRatio,
   };
 }
