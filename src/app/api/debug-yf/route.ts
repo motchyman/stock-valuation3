@@ -1,5 +1,4 @@
 // src/app/api/debug-yf/route.ts
-// Yahoo Finance v10で日本株の有利子負債が取れるか確認用
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
@@ -7,57 +6,83 @@ export async function GET(req: NextRequest) {
   const code = searchParams.get("code") ?? "1333";
   const symbol = `${code}.T`;
 
-  // まずcrumbを取得
-  let crumb = "";
-  let cookies = "";
+  const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+  // Step1: Yahoo Financeのトップページにアクセスしてcookieを取得
+  let cookieHeader = "";
   try {
-    const crumbRes = await fetch("https://query2.finance.yahoo.com/v1/test/getcrumb", {
-      headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
+    const homeRes = await fetch(`https://finance.yahoo.com/quote/${symbol}/financials/`, {
+      headers: { "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9" },
+      redirect: "follow",
     });
-    crumb = await crumbRes.text();
-    cookies = crumbRes.headers.get("set-cookie") ?? "";
+    const setCookie = homeRes.headers.get("set-cookie") ?? "";
+    // 必要なcookieを抽出
+    const cookies = setCookie.split(",").map(c => c.split(";")[0].trim()).filter(Boolean);
+    cookieHeader = cookies.join("; ");
   } catch (e) {
-    return NextResponse.json({ error: "crumb取得失敗", detail: String(e) });
+    return NextResponse.json({ step: "cookie取得失敗", error: String(e) });
   }
 
-  // balanceSheetHistory で有利子負債を取得
+  // Step2: crumb取得
+  let crumb = "";
   try {
-    const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=balanceSheetHistory&crumb=${encodeURIComponent(crumb)}`;
+    const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+      headers: {
+        "User-Agent": UA,
+        "Cookie": cookieHeader,
+        "Accept": "*/*",
+      },
+    });
+    crumb = await crumbRes.text();
+    const newCookies = crumbRes.headers.get("set-cookie");
+    if (newCookies) {
+      const extra = newCookies.split(",").map(c => c.split(";")[0].trim()).filter(Boolean);
+      cookieHeader = [...cookieHeader.split("; "), ...extra].filter(Boolean).join("; ");
+    }
+  } catch (e) {
+    return NextResponse.json({ step: "crumb取得失敗", error: String(e) });
+  }
+
+  if (!crumb || crumb.includes("{")) {
+    return NextResponse.json({ step: "crumb無効", crumb, cookie: cookieHeader.slice(0, 100) });
+  }
+
+  // Step3: balanceSheetHistory取得
+  try {
+    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=balanceSheetHistory&crumb=${encodeURIComponent(crumb)}`;
     const res = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "User-Agent": UA,
+        "Cookie": cookieHeader,
         "Accept": "application/json",
-        "Cookie": cookies,
       },
     });
 
     const data = await res.json();
-    const result = data?.quoteSummary?.result?.[0];
-    const statements = result?.balanceSheetHistory?.balanceSheetStatements ?? [];
+    const statements = data?.quoteSummary?.result?.[0]?.balanceSheetHistory?.balanceSheetStatements ?? [];
 
     if (statements.length === 0) {
-      return NextResponse.json({ symbol, crumb, error: "財務データなし", raw: data });
+      return NextResponse.json({ symbol, crumb, status: res.status, error: "財務データなし", raw: data });
     }
 
-    // 有利子負債に関連するフィールドを抽出
     const ibdFields = [
       "shortTermDebt", "currentPortionOfLongTermDebt",
       "longTermDebt", "longTermDebtNoncurrent",
       "shortLongTermDebt", "shortLongTermDebtTotal",
+      "totalDebt",
     ];
 
-    const extracted = statements.map((s: Record<string, {raw?: number}>) => {
-      const result: Record<string, number | string> = {
-        endDate: String(s.endDate ?? ""),
-      };
+    const extracted = statements.map((s: Record<string, {raw?: number} | string>) => {
+      const row: Record<string, number | string> = { endDate: String((s.endDate as {fmt?: string})?.fmt ?? "") };
       for (const f of ibdFields) {
-        if (s[f]?.raw !== undefined) result[f] = s[f].raw!;
+        const v = s[f] as {raw?: number} | undefined;
+        if (v?.raw !== undefined) row[f] = v.raw;
       }
-      return result;
+      return row;
     });
 
-    return NextResponse.json({ symbol, statements: extracted });
+    return NextResponse.json({ symbol, success: true, statements: extracted });
   } catch (e) {
-    return NextResponse.json({ error: String(e) });
+    return NextResponse.json({ step: "BS取得失敗", error: String(e) });
   }
 }
