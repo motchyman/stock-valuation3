@@ -7,7 +7,7 @@ export interface StockData {
   previousClose: number;
   bps: number;
   eps: number;
-  nikkeiEps?: number;       // 日経マネー式EPS（予想経常利益×0.7÷株式数）
+  nikkeiEps?: number;
   roe: number;
   forecastROE: number[];
   totalAssets: number;
@@ -52,8 +52,12 @@ const safe = (v: unknown): number =>
 //     自己資本比率 < 33.4% → 1 ÷ (自己資本比率 + 0.5)
 //     33.4〜66.7% → 1 ÷ (自己資本比率 + 0.333)
 //     > 66.7% → 1 ÷ (自己資本比率 + 0.167)
-// 資産価値 = BPS × 0.7
-//   ※有利子負債はJ-Quantsから取得できないため除外
+//
+// 資産価値 = BPS × 0.7 × (自己資本比率 / 0.5)
+//   ※有利子負債が取得できないため、自己資本比率で補正
+//   ※自己資本比率が低い（借金が多い）ほど資産価値を割り引く
+//   ※自己資本比率50%を基準(補正係数=1.0)とし、上下に調整
+//   ※ただし補正係数の上限を1.4(自己資本比率70%相当)に制限
 function calcNikkeiMoney(stock: StockData): {
   theoretical: number;
   updownPct: string;
@@ -65,29 +69,31 @@ function calcNikkeiMoney(stock: StockData): {
   const price = safe(stock.price);
 
   // 日経マネー式EPS（予想経常利益×0.7÷株式数）
-  // なければ通常EPSで代用
   const eps = safe(stock.nikkeiEps ?? 0) > 0
     ? safe(stock.nikkeiEps)
     : safe(stock.eps);
 
   if (bps <= 0 || eps <= 0) {
+    const assetValue = bps * 0.7;
     return {
-      theoretical: Math.round(bps * 0.7),
-      updownPct: price > 0 ? ((bps * 0.7 / price - 1) * 100).toFixed(1) : "0.0",
+      theoretical: Math.round(assetValue),
+      updownPct: price > 0 ? ((assetValue / price - 1) * 100).toFixed(1) : "0.0",
       businessValue: 0,
-      assetValue: Math.round(bps * 0.7),
+      assetValue: Math.round(assetValue),
       roa: 0,
     };
   }
 
   const totalAssets = safe(stock.totalAssets);
   const equity      = safe(stock.equity);
+
+  // 自己資本比率（J-Quantsから取得 or TA/Eqから計算）
   const equityRatio = totalAssets > 0 ? equity / totalAssets : 0.5;
 
   // ROA = EPS ÷ (BPS ÷ 自己資本比率)
   const roa = equityRatio > 0 ? eps * equityRatio / bps : 0;
 
-  // 財務レバレッジ補正
+  // 財務レバレッジ補正（日経マネー式）
   let leverageAdj: number;
   if (equityRatio < 0.334) {
     leverageAdj = 1 / (equityRatio + 0.5);
@@ -100,15 +106,24 @@ function calcNikkeiMoney(stock: StockData): {
   // 事業価値 = EPS × 15 × ROA × 10 × 財務レバレッジ補正
   const businessValue = eps * 15 * roa * 10 * leverageAdj;
 
-  // 資産価値 = BPS × 0.7（有利子負債は取得不可のため除外）
-  const assetValue = bps * 0.7;
+  // 資産価値 = BPS × 0.7 × 自己資本比率補正
+  // 自己資本比率50%を基準(1.0)として線形補正
+  // 例: 自己資本比率20% → 補正0.4、50% → 1.0、80% → 1.4(上限)
+  const assetAdjRatio = Math.min(equityRatio / 0.5, 1.4);
+  const assetValue = bps * 0.7 * assetAdjRatio;
 
   const theoretical = Math.round(businessValue + assetValue);
   const updownPct = price > 0
     ? ((theoretical / price - 1) * 100).toFixed(1)
     : "0.0";
 
-  return { theoretical, updownPct, businessValue: Math.round(businessValue), assetValue: Math.round(assetValue), roa };
+  return {
+    theoretical,
+    updownPct,
+    businessValue: Math.round(businessValue),
+    assetValue:    Math.round(assetValue),
+    roa,
+  };
 }
 
 // ── RIMモデル 理論株価計算 ─────────────────────────────────────────
