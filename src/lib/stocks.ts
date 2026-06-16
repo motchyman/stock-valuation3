@@ -46,18 +46,8 @@ const safe = (v: unknown): number =>
 // ── 日経マネー式 理論株価計算 ─────────────────────────────────────
 // 理論株価 = 事業価値 + 資産価値
 // 事業価値 = EPS × 15 × ROA × 10 × 財務レバレッジ補正
-//   EPS = 予想経常利益 × 0.7 ÷ 発行済株式数（nikkeiEps）
-//   ROA = EPS ÷ (BPS ÷ 自己資本比率)
-//   財務レバレッジ補正:
-//     自己資本比率 < 33.4% → 1 ÷ (自己資本比率 + 0.5)
-//     33.4〜66.7% → 1 ÷ (自己資本比率 + 0.333)
-//     > 66.7% → 1 ÷ (自己資本比率 + 0.167)
-//
-// 資産価値 = BPS × 0.7 × (自己資本比率 / 0.5)
-//   ※有利子負債が取得できないため、自己資本比率で補正
-//   ※自己資本比率が低い（借金が多い）ほど資産価値を割り引く
-//   ※自己資本比率50%を基準(補正係数=1.0)とし、上下に調整
-//   ※ただし補正係数の上限を1.4(自己資本比率70%相当)に制限
+// 資産価値 = BPS × 0.7 × 自己資本比率補正
+//   ※有利子負債が取得できないため自己資本比率で有利子負債の多さを推計
 function calcNikkeiMoney(stock: StockData): {
   theoretical: number;
   updownPct: string;
@@ -68,7 +58,6 @@ function calcNikkeiMoney(stock: StockData): {
   const bps   = safe(stock.bps);
   const price = safe(stock.price);
 
-  // 日経マネー式EPS（予想経常利益×0.7÷株式数）
   const eps = safe(stock.nikkeiEps ?? 0) > 0
     ? safe(stock.nikkeiEps)
     : safe(stock.eps);
@@ -86,8 +75,6 @@ function calcNikkeiMoney(stock: StockData): {
 
   const totalAssets = safe(stock.totalAssets);
   const equity      = safe(stock.equity);
-
-  // 自己資本比率（J-Quantsから取得 or TA/Eqから計算）
   const equityRatio = totalAssets > 0 ? equity / totalAssets : 0.5;
 
   // ROA = EPS ÷ (BPS ÷ 自己資本比率)
@@ -103,13 +90,25 @@ function calcNikkeiMoney(stock: StockData): {
     leverageAdj = 1 / (equityRatio + 0.167);
   }
 
-  // 事業価値 = EPS × 15 × ROA × 10 × 財務レバレッジ補正
+  // 事業価値
   const businessValue = eps * 15 * roa * 10 * leverageAdj;
 
-  // 資産価値 = BPS × 0.7 × 自己資本比率補正
-  // 自己資本比率50%を基準(1.0)として線形補正
-  // 例: 自己資本比率20% → 補正0.4、50% → 1.0、80% → 1.4(上限)
-  const assetAdjRatio = Math.min(equityRatio / 0.5, 1.4);
+  // 資産価値の補正（自己資本比率で有利子負債の多さを推計）
+  // 自己資本比率が低いほど有利子負債が多い → 資産価値を強く割り引く
+  let assetAdjRatio: number;
+  if (equityRatio >= 0.667) {
+    // 無借金に近い → 補正なし
+    assetAdjRatio = 1.0;
+  } else if (equityRatio >= 0.5) {
+    // 50〜67% → 0.8〜1.0
+    assetAdjRatio = 0.8 + (equityRatio - 0.5) / 0.167 * 0.2;
+  } else if (equityRatio >= 0.334) {
+    // 33〜50% → 0.5〜0.8
+    assetAdjRatio = 0.5 + (equityRatio - 0.334) / 0.166 * 0.3;
+  } else {
+    // 33%未満 → 0〜0.5（強い割引）
+    assetAdjRatio = Math.max(0, equityRatio / 0.334 * 0.5);
+  }
   const assetValue = bps * 0.7 * assetAdjRatio;
 
   const theoretical = Math.round(businessValue + assetValue);
