@@ -18,13 +18,9 @@ function convertRow(s: Record<string, unknown>) {
   const cash        = toNum(s.cash_raw) / 1_000_000;
   const netProfit   = toNum(s.np_raw)   / 1_000_000;
 
-  // 日経マネー式EPS用: 予想経常利益×0.7÷(発行済-自己株)
-  // 来期予想経常利益(nxf_odp)はDBになし → 今期経常利益(odp_raw)で代用
-  // 来期予想営業利益(nxf_op_raw)がある場合はそちらを優先
-  const odpRaw    = toNum(s.odp_raw)    / 1_000_000; // 今期経常利益
-  const nxfOpRaw  = toNum(s.nxf_op_raw) / 1_000_000; // 来期予想営業利益
+  const odpRaw   = toNum(s.odp_raw)    / 1_000_000;
+  const nxfOpRaw = toNum(s.nxf_op_raw) / 1_000_000;
 
-  // 発行済株式数（千株）: 自己株式を除く
   const shOut = toNum(s.sh_out_raw) / 1000;
   const trSh  = toNum(s.tr_sh_raw)  / 1000;
   const avgSh = toNum(s.avg_sh_raw) / 1000;
@@ -32,7 +28,6 @@ function convertRow(s: Record<string, unknown>) {
   const bpsRaw = toNum(s.bps_raw);
   const epsRaw = toNum(s.eps_raw);
 
-  // 自己株式控除後の発行済株式数（千株）
   const sharesNet = shOut > 0 && trSh >= 0
     ? shOut - trSh
     : avgSh > 0 ? avgSh
@@ -43,13 +38,11 @@ function convertRow(s: Record<string, unknown>) {
   const bps = bpsRaw > 0 ? bpsRaw
     : (shares > 1 ? (equity / shares) * 1000 : 0);
 
-  // 通常EPS（純利益ベース、RIMモデル用）
   const eps = (netProfit !== 0 && shares > 1)
     ? (netProfit / shares) * 1000
     : epsRaw;
 
-  // 日経マネー式EPS = 経常利益(または来期予想営業利益) × 0.7 ÷ (発行済-自己株)
-  // 優先順位: 来期予想営業利益 > 今期経常利益 > 通常EPS
+  // 日経マネー式EPS = 経常利益(or来期予想営業利益) × 0.7 ÷ 株式数
   const odpBase = nxfOpRaw > 0 ? nxfOpRaw : odpRaw;
   const nikkeiEps = (odpBase > 0 && shares > 1)
     ? (odpBase / shares) * 1000 * 0.7
@@ -70,14 +63,18 @@ function convertRow(s: Record<string, unknown>) {
   const operatingAssets      = totalAssets - cash;
   const operatingLiabilities = totalAssets - equity;
 
+  // 推計有利子負債 = max(0, (総負債 - 現金) × 0.6)
+  // 総負債の約60%が有利子負債という仮定
+  const totalDebt    = totalAssets - equity;
+  const estimatedIBD = Math.max(0, (totalDebt - cash) * 0.6);
+
   return {
     bps, eps, nikkeiEps, roe, forecastROE,
     totalAssets, equity,
     operatingAssets, operatingLiabilities,
     cash,
-    interestBearingDebt: 0,
+    interestBearingDebt: estimatedIBD,  // 推計値（百万円）
     shares,
-    sharesGross: shOut, // 自己株式控除前（参考）
   };
 }
 
@@ -142,7 +139,7 @@ export async function GET(req: NextRequest) {
         operatingAssets:      calc.operatingAssets,
         operatingLiabilities: calc.operatingLiabilities,
         cash:                 calc.cash,
-        interestBearingDebt:  0,
+        interestBearingDebt:  calc.interestBearingDebt,
         shares:               calc.shares,
         requiredReturn:       toNum(s.required_return) || 0.05,
         lastUpdated:          s.updated_at,
