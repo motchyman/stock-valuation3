@@ -35,9 +35,9 @@ const C = {
   accent: "#3b82f6", muted: "#4a6080", text: "#cbd5e1", bright: "#e2f0ff",
 };
 
-function DetailPanel({ s, nikkeiRef, forecastYears, terminalG, assetAdjK, isMobile, onClose }: {
+function DetailPanel({ s, nikkeiRef, forecastYears, terminalG, ibdK, isMobile, onClose }: {
   s: ValuationResult; nikkeiRef: NikkeiRef | null;
-  forecastYears: number; terminalG: number; assetAdjK: number;
+  forecastYears: number; terminalG: number; ibdK: number;
   isMobile: boolean; onClose: () => void;
 }) {
   const [tab, setTab] = useState<"rim"|"nikkei_calc"|"nikkei_ref">("nikkei_calc");
@@ -106,7 +106,7 @@ function DetailPanel({ s, nikkeiRef, forecastYears, terminalG, assetAdjK, isMobi
             </div>
             {[
               { label:"事業価値 (EPS×15×ROA×10×補正)", val:s.nikkeiBusinessValue, color:"#fbbf24" },
-              { label:"資産価値 (BPS×0.7×補正係数)",    val:s.nikkeiAssetValue,    color:"#818cf8" },
+              { label:"資産価値 (BPS×0.7 - 推計IBD/株)",  val:s.nikkeiAssetValue,    color:"#818cf8" },
             ].map(item => (
               <div key={item.label} style={{ marginBottom:12 }}>
                 <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4, fontSize:12 }}>
@@ -123,8 +123,10 @@ function DetailPanel({ s, nikkeiRef, forecastYears, terminalG, assetAdjK, isMobi
               EPS(経常×0.7/株): <strong style={{ color:C.text }}>¥{s.nikkeiEps ? fmt(s.nikkeiEps) : "—"}</strong><br/>
               ROA: <strong style={{ color:C.text }}>{(s.roa*100).toFixed(1)}%</strong>　
               自己資本比率: <strong style={{ color:C.text }}>{s.totalAssets>0?((s.equity/s.totalAssets)*100).toFixed(1):"—"}%</strong><br/>
-              資産補正係数: <strong style={{ color:"#34d399" }}>{s.assetAdjRatio.toFixed(2)}</strong>
-              <span style={{ fontSize:9, color:C.muted }}> (自己資本比率×k={assetAdjK}、上限1.0)</span>
+              推計IBD/株: <strong style={{ color:"#f87171" }}>¥{fmt(s.nikkeiIbdPerShare)}</strong>
+              <span style={{ fontSize:9, color:C.muted }}> ((総負債-現金)×{ibdK}÷株数)</span><br/>
+              BPS×0.7: <strong style={{ color:C.text }}>¥{fmt(Math.round(s.bps*0.7))}</strong>　→　
+              資産価値: <strong style={{ color:"#818cf8" }}>¥{fmt(s.nikkeiAssetValue)}</strong>
             </div>
           </>
         )}
@@ -242,7 +244,7 @@ export default function Home() {
   const [forecastYears, setForecastYears] = useState(10);
   const [terminalG, setTerminalG]       = useState(0.02);
   const [payoutRatio, setPayoutRatio]   = useState(0.4);
-  const [assetAdjK, setAssetAdjK]       = useState(2.0);
+  const [ibdK, setIbdK]                 = useState(0.6);
   const [selected, setSelected]         = useState<string | null>(null);
   const [sortKey, setSortKey]           = useState("nikkei");
   const [sortAsc, setSortAsc]           = useState(false);
@@ -367,8 +369,8 @@ export default function Home() {
   };
 
   const results: ValuationResult[] = useMemo(
-    () => stocks.map(s => calcValuation(s, forecastYears, terminalG, false, payoutRatio, assetAdjK)),
-    [stocks, forecastYears, terminalG, payoutRatio, assetAdjK]
+    () => stocks.map(s => calcValuation(s, forecastYears, terminalG, false, payoutRatio, ibdK)),
+    [stocks, forecastYears, terminalG, payoutRatio, ibdK]
   );
 
   const filtered = useMemo(() => results.filter(s => {
@@ -454,15 +456,14 @@ export default function Home() {
       </div>
       <div>
         <div style={{ fontSize:10, color:C.muted, marginBottom:6, letterSpacing:2 }}>
-          資産補正係数(k): <strong style={{ color:"#34d399" }}>{assetAdjK.toFixed(1)}</strong>
-          <span style={{ color:C.muted, fontSize:9 }}>　自己資本比率{(50/assetAdjK).toFixed(0)}%で補正1.0</span>
+          有利子負債推計係数(k): <strong style={{ color:"#f87171" }}>{ibdK.toFixed(1)}</strong>
         </div>
-        <input type="range" min={1} max={5} step={0.5}
-          value={assetAdjK}
-          onChange={e => setAssetAdjK(parseFloat(e.target.value))}
-          style={{ width:120, accentColor:"#34d399" }} />
+        <input type="range" min={0} max={1} step={0.1}
+          value={ibdK}
+          onChange={e => setIbdK(parseFloat(e.target.value))}
+          style={{ width:120, accentColor:"#f87171" }} />
         <div style={{ fontSize:9, color:C.muted, marginTop:3 }}>
-          k=1: 補正なし　k=2: 50%基準　k=4: 25%基準
+          k=0: 補正なし　k=0.6: 標準　k=1.0: 最大割引
         </div>
       </div>
       <div>
@@ -553,9 +554,7 @@ export default function Home() {
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
               <div style={{ background:C.bg, borderRadius:8, padding:"8px 10px", border:`1px solid #064e3b` }}>
-                <div style={{ fontSize:9, color:"#6ee7b7", marginBottom:2 }}>
-                  日経マネー計算値 <span style={{ color:C.muted }}>k={assetAdjK}</span>
-                </div>
+                <div style={{ fontSize:9, color:"#6ee7b7", marginBottom:2 }}>日経マネー計算値</div>
                 <div style={{ fontWeight:700, fontSize:14, color:"#34d399" }}>¥{fmt(s.nikkeiTheoretical)}</div>
                 <div style={{ fontSize:11, color:pctColor(s.nikkeiUpdownPct), fontWeight:700 }}>
                   {parseFloat(s.nikkeiUpdownPct)>=0?"+":""}{s.nikkeiUpdownPct}%
@@ -702,9 +701,8 @@ export default function Home() {
       )}
       <div style={{ padding:"12px 20px", borderTop:`1px solid ${C.border}`, fontSize:10, color:"#334155", lineHeight:1.8 }}>
         ※ 表示中: {sorted.length}件 / {totalCount}銘柄　
-        ※ 日経マネー計算値: 事業価値+資産価値(BPS×0.7×補正k={assetAdjK})　
-        ※ 誌面掲載値: 日経マネー2026年7月号別冊付録（参考）　
-        ※ 株価はYahoo Financeより取得
+        ※ 日経マネー計算値: 事業価値 + max(BPS×0.7 - 推計IBD/株, 0)　推計IBD係数k={ibdK}
+        ※ 誌面掲載値: 日経マネー2026年7月号別冊付録（参考）　株価はYahoo Financeより取得
       </div>
     </div>
   );
@@ -718,14 +716,14 @@ export default function Home() {
         <>
           {MobileList}
           {selectedResult && (
-            <DetailPanel s={selectedResult} nikkeiRef={selectedNikkei} forecastYears={forecastYears} terminalG={terminalG} assetAdjK={assetAdjK} isMobile={true} onClose={() => setSelected(null)} />
+            <DetailPanel s={selectedResult} nikkeiRef={selectedNikkei} forecastYears={forecastYears} terminalG={terminalG} ibdK={ibdK} isMobile={true} onClose={() => setSelected(null)} />
           )}
         </>
       ) : (
         <div style={{ display:"flex" }}>
           {DesktopTable}
           {selectedResult && (
-            <DetailPanel s={selectedResult} nikkeiRef={selectedNikkei} forecastYears={forecastYears} terminalG={terminalG} assetAdjK={assetAdjK} isMobile={false} onClose={() => setSelected(null)} />
+            <DetailPanel s={selectedResult} nikkeiRef={selectedNikkei} forecastYears={forecastYears} terminalG={terminalG} ibdK={ibdK} isMobile={false} onClose={() => setSelected(null)} />
           )}
         </div>
       )}
