@@ -46,131 +46,7 @@ export const PRIME_STOCKS_LIST: { code: string; name: string; sector: string; ya
 const safe = (v: unknown): number =>
   typeof v === "number" && isFinite(v) ? v : 0;
 
-// ── はっしゃん式（日経マネー誌62ページ）理論株価計算 ──────────────
-// 理論株価 = 事業価値 + 資産価値 - 市場リスク
-//
-// A. 事業価値 = EPS × 15 × ROA(上限30%) × 10 × 財務レバレッジ補正
-//   EPS = 予想経常利益×0.7 ÷ 発行済株式数(自己株除く)
-//   ROA = EPS ÷ (BPS ÷ 自己資本比率)  ※上限30%
-//   財務レバレッジ補正:
-//     66.7%以上   → 1倍
-//     33.4〜66.7% → 1〜1.5倍（線形補間）
-//     33.4%未満   → 1.5倍
-//
-// B. 資産価値 = BPS × 割引評価率
-//   割引評価率(自己資本比率別):
-//     80%以上 → 80%
-//     67%以上 → 75%
-//     50%以上 → 70%
-//     33%以上 → 65%
-//     10%以上 → 60%
-//     10%未満 → 50%
-//
-// C. 市場リスク（PBR 0.5倍未満の場合のみ減額）
-//   PBR 0.5倍以上     → 0%
-//   0.41〜0.49倍     → 20%
-//   0.34〜0.40倍     → 33.3%
-//   0.25〜0.33倍     → 50%
-//   0.21〜0.24倍     → 66.7%
-//   0.04〜0.20倍     → 75〜95%（線形補間）
-//   0〜0.03倍        → 97.5〜99.5%（線形補間）
-//
-// 市場リスク = (事業価値 + 資産価値) × 減額率
-
-function calcNikkeiMoney(stock: StockData, ibdK: number = 0.6): {
-  theoretical: number;
-  updownPct: string;
-  businessValue: number;
-  assetValue: number;
-  marketRisk: number;
-  ibdPerShare: number;
-  assetAdjRatio: number;
-  roa: number;
-} {
-  const bps   = safe(stock.bps);
-  const price = safe(stock.price);
-
-  // 日経マネー式EPS
-  const eps = safe(stock.nikkeiEps ?? 0) > 0
-    ? safe(stock.nikkeiEps)
-    : safe(stock.eps);
-
-  const totalAssets = safe(stock.totalAssets);
-  const equity      = safe(stock.equity);
-  const cash        = safe(stock.cash);
-  const shares      = safe(stock.shares);
-  const equityRatio = totalAssets > 0 ? equity / totalAssets : 0.5;
-
-  // 推計有利子負債/株
-  const totalDebt    = totalAssets - equity;
-  const estimatedIBD = Math.max(0, (totalDebt - cash) * ibdK);
-  const ibdPerShare  = shares > 0 ? (estimatedIBD / shares) * 1000 : 0;
-
-  if (bps <= 0 || eps <= 0) {
-    // A. 資産価値のみ
-    const assetDiscountRate = calcAssetDiscountRate(equityRatio);
-    const assetValue = bps * assetDiscountRate;
-    const pbr = price > 0 && bps > 0 ? price / bps : 0;
-    const marketRiskRate = calcMarketRiskRate(pbr);
-    const total = assetValue * (1 - marketRiskRate);
-    return {
-      theoretical: Math.round(total),
-      updownPct: price > 0 ? ((total / price - 1) * 100).toFixed(1) : "0.0",
-      businessValue: 0,
-      assetValue: Math.round(assetValue),
-      marketRisk: Math.round(assetValue * marketRiskRate),
-      ibdPerShare: Math.round(ibdPerShare),
-      assetAdjRatio: assetDiscountRate,
-      roa: 0,
-    };
-  }
-
-  // A. 事業価値
-  // ROA = EPS ÷ (BPS ÷ 自己資本比率)、上限30%
-  const roaRaw = equityRatio > 0 ? eps * equityRatio / bps : 0;
-  const roa = Math.min(roaRaw, 0.30);
-
-  // 財務レバレッジ補正
-  // 66.7%以上→1倍、33.4〜66.7%→線形で1〜1.5倍、33.4%未満→1.5倍
-  let leverageAdj: number;
-  if (equityRatio >= 0.667) {
-    leverageAdj = 1.0;
-  } else if (equityRatio >= 0.334) {
-    // 33.4%で1.5倍、66.7%で1.0倍に線形補間
-    leverageAdj = 1.5 - (equityRatio - 0.334) / (0.667 - 0.334) * 0.5;
-  } else {
-    leverageAdj = 1.5;
-  }
-
-  const businessValue = eps * 15 * roa * 10 * leverageAdj;
-
-  // B. 資産価値 = BPS × 割引評価率
-  const assetDiscountRate = calcAssetDiscountRate(equityRatio);
-  const assetValue = bps * assetDiscountRate;
-
-  // C. 市場リスク（PBR 0.5倍未満の場合のみ）
-  const pbr = price > 0 && bps > 0 ? price / bps : 99; // 価格なし→リスクなし
-  const marketRiskRate = calcMarketRiskRate(pbr);
-  const marketRisk = (businessValue + assetValue) * marketRiskRate;
-
-  const theoretical = Math.round(businessValue + assetValue - marketRisk);
-  const updownPct = price > 0
-    ? ((theoretical / price - 1) * 100).toFixed(1)
-    : "0.0";
-
-  return {
-    theoretical,
-    updownPct,
-    businessValue: Math.round(businessValue),
-    assetValue:    Math.round(assetValue),
-    marketRisk:    Math.round(marketRisk),
-    ibdPerShare:   Math.round(ibdPerShare),
-    assetAdjRatio: assetDiscountRate,
-    roa,
-  };
-}
-
-// 資産価値の割引評価率（自己資本比率別）
+// ── 資産価値の割引評価率（自己資本比率別・p.62）──────────────────
 function calcAssetDiscountRate(equityRatio: number): number {
   if (equityRatio >= 0.80) return 0.80;
   if (equityRatio >= 0.67) return 0.75;
@@ -180,9 +56,10 @@ function calcAssetDiscountRate(equityRatio: number): number {
   return 0.50;
 }
 
-// 市場リスク減額率（PBR別）
+// ── 市場リスク減額率（PBR別・p.62）────────────────────────────────
+// PBR 0.5倍未満の場合のみ減額
 function calcMarketRiskRate(pbr: number): number {
-  if (pbr >= 0.5)  return 0.000;
+  if (pbr >= 0.50) return 0.000;
   if (pbr >= 0.41) return 0.200;
   if (pbr >= 0.34) return 0.333;
   if (pbr >= 0.25) return 0.500;
@@ -198,6 +75,111 @@ function calcMarketRiskRate(pbr: number): number {
   return 0.000;
 }
 
+// ── はっしゃん式（日経マネー誌p.62〜63）理論株価計算 ────────────────
+//
+// 理論株価 = 事業価値 + 資産価値 - 市場リスク
+//
+// ⒜ 事業価値 = EPS × 15 × ROA(上限30%) × 10 × 財務レバレッジ補正
+//   EPS = 予想経常利益×0.7 ÷ 発行済株式数(自己株除く)
+//   ROA = EPS ÷ (BPS ÷ 自己資本比率)  ※上限30%
+//   財務レバレッジ補正:
+//     66.7%以上   → 1倍
+//     33.4〜66.7% → 1÷(自己資本比率+0.333)
+//     33.4%未満   → 1.5倍
+//
+// ⒝ 資産価値 = BPS × 割引評価率（自己資本比率別）
+//   80%以上→80%, 67%以上→75%, 50%以上→70%,
+//   33%以上→65%, 10%以上→60%, 10%未満→50%
+//
+// ⒞ 市場リスク = (事業価値+資産価値) × 減額率
+//   PBR 0.5倍以上→0%, 0.41〜0.49→20%, 0.34〜0.40→33.3%,
+//   0.25〜0.33→50%, 0.21〜0.24→66.7%, 0.04〜0.20→75〜95%,
+//   0〜0.03→97.5〜99.5%
+function calcNikkeiMoney(stock: StockData): {
+  theoretical: number;
+  updownPct: string;
+  businessValue: number;
+  assetValue: number;
+  marketRisk: number;
+  ibdPerShare: number;
+  assetAdjRatio: number;
+  roa: number;
+} {
+  const bps   = safe(stock.bps);
+  const price = safe(stock.price);
+
+  // 日経マネー式EPS（予想経常利益×0.7÷発行済株式数(自己株除く)）
+  const eps = safe(stock.nikkeiEps ?? 0) > 0
+    ? safe(stock.nikkeiEps)
+    : safe(stock.eps);
+
+  const totalAssets = safe(stock.totalAssets);
+  const equity      = safe(stock.equity);
+  const equityRatio = totalAssets > 0 ? equity / totalAssets : 0.5;
+
+  // ⒝ 資産価値 = BPS × 割引評価率
+  const assetDiscountRate = calcAssetDiscountRate(equityRatio);
+  const assetValue = bps * assetDiscountRate;
+
+  // 現在の株価ベースのPBR（市場リスク計算用）
+  // 株価未取得時はリスクなし扱い
+  const currentPbr = price > 0 && bps > 0 ? price / bps : 99;
+
+  if (bps <= 0 || eps <= 0) {
+    const marketRiskRate = calcMarketRiskRate(currentPbr);
+    const marketRisk = assetValue * marketRiskRate;
+    const total = Math.max(assetValue - marketRisk, 0);
+    return {
+      theoretical: Math.round(total),
+      updownPct: price > 0 ? ((total / price - 1) * 100).toFixed(1) : "0.0",
+      businessValue: 0,
+      assetValue: Math.round(assetValue),
+      marketRisk: Math.round(marketRisk),
+      ibdPerShare: 0,
+      assetAdjRatio: assetDiscountRate,
+      roa: 0,
+    };
+  }
+
+  // ⒜ 事業価値
+  // ROA = EPS ÷ (BPS ÷ 自己資本比率)、上限30%
+  const roaRaw = equityRatio > 0 ? eps * equityRatio / bps : 0;
+  const roa = Math.min(roaRaw, 0.30);
+
+  // 財務レバレッジ補正（p.62の表通り）
+  let leverageAdj: number;
+  if (equityRatio >= 0.667) {
+    leverageAdj = 1.0;
+  } else if (equityRatio >= 0.334) {
+    // 33.4〜66.7%: 1÷(自己資本比率+0.333)
+    leverageAdj = 1 / (equityRatio + 0.333);
+  } else {
+    leverageAdj = 1.5;
+  }
+
+  const businessValue = eps * 15 * roa * 10 * leverageAdj;
+
+  // ⒞ 市場リスク（PBR 0.5倍未満の場合のみ）
+  const marketRiskRate = calcMarketRiskRate(currentPbr);
+  const marketRisk = (businessValue + assetValue) * marketRiskRate;
+
+  const theoretical = Math.max(Math.round(businessValue + assetValue - marketRisk), 0);
+  const updownPct = price > 0
+    ? ((theoretical / price - 1) * 100).toFixed(1)
+    : "0.0";
+
+  return {
+    theoretical,
+    updownPct,
+    businessValue: Math.round(businessValue),
+    assetValue:    Math.round(assetValue),
+    marketRisk:    Math.round(marketRisk),
+    ibdPerShare:   0,  // はっしゃん式では有利子負債を別途引かない
+    assetAdjRatio: assetDiscountRate,
+    roa,
+  };
+}
+
 // ── RIMモデル 理論株価計算 ─────────────────────────────────────────
 export function calcValuation(
   stock: StockData,
@@ -205,7 +187,7 @@ export function calcValuation(
   terminalGrowthRate: number,
   useAutoR: boolean = false,
   payoutRatio: number = 0.4,
-  ibdK: number = 0.6,
+  ibdK: number = 0.6,  // RIMモデルの有利子負債推計係数（はっしゃん式では未使用）
 ): ValuationResult {
   const equityRatio = safe(stock.totalAssets) > 0
     ? safe(stock.equity) / safe(stock.totalAssets)
@@ -215,8 +197,9 @@ export function calcValuation(
     ? safe(stock.eps) * equityRatio / safe(stock.bps)
     : 0;
 
+  // RIMモデル用の財務レバレッジ（autoR計算用）
   const leverageAdj = equityRatio >= 0.667 ? 1.0
-    : equityRatio >= 0.334 ? 1.5 - (equityRatio - 0.334) / (0.667 - 0.334) * 0.5
+    : equityRatio >= 0.334 ? 1 / (equityRatio + 0.333)
     : 1.5;
 
   const autoR = roa * leverageAdj;
@@ -278,7 +261,7 @@ export function calcValuation(
     ? safe(stock.price) / safe(stock.bps)
     : 0;
 
-  const nikkei = calcNikkeiMoney(stock, ibdK);
+  const nikkei = calcNikkeiMoney(stock);
 
   return {
     ...stock,
