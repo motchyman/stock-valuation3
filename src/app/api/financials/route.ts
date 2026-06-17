@@ -10,74 +10,6 @@ const toNum = (v: unknown): number => {
   return isFinite(n) ? n : 0;
 };
 
-const TARGET_ROE = 0.08;
-
-function convertRow(s: Record<string, unknown>) {
-  const equity      = toNum(s.eq_raw)   / 1_000_000;
-  const totalAssets = toNum(s.ta_raw)   / 1_000_000;
-  const cash        = toNum(s.cash_raw) / 1_000_000;
-  const netProfit   = toNum(s.np_raw)   / 1_000_000;
-
-  const odpRaw   = toNum(s.odp_raw)    / 1_000_000;
-  const nxfOpRaw = toNum(s.nxf_op_raw) / 1_000_000;
-
-  const shOut = toNum(s.sh_out_raw) / 1000;
-  const trSh  = toNum(s.tr_sh_raw)  / 1000;
-  const avgSh = toNum(s.avg_sh_raw) / 1000;
-
-  const bpsRaw = toNum(s.bps_raw);
-  const epsRaw = toNum(s.eps_raw);
-
-  const sharesNet = shOut > 0 && trSh >= 0
-    ? shOut - trSh
-    : avgSh > 0 ? avgSh
-    : (bpsRaw > 0 && equity > 0 ? (equity / bpsRaw) * 1000 : 0);
-
-  const shares = sharesNet > 0 ? sharesNet : avgSh > 0 ? avgSh : sharesNet;
-
-  const bps = bpsRaw > 0 ? bpsRaw
-    : (shares > 1 ? (equity / shares) * 1000 : 0);
-
-  const eps = (netProfit !== 0 && shares > 1)
-    ? (netProfit / shares) * 1000
-    : epsRaw;
-
-  // 日経マネー式EPS = 経常利益(or来期予想営業利益) × 0.7 ÷ 株式数
-  const odpBase = nxfOpRaw > 0 ? nxfOpRaw : odpRaw;
-  const nikkeiEps = (odpBase > 0 && shares > 1)
-    ? (odpBase / shares) * 1000 * 0.7
-    : eps;
-
-  const roe = bps > 0 && eps !== 0 ? eps / bps
-    : (equity > 0 && netProfit !== 0 ? netProfit / equity : 0);
-
-  const nxfEps = toNum(s.nxf_eps_raw);
-  const roeYear1 = nxfEps > 0 && bps > 0 ? nxfEps / bps : roe;
-
-  const forecastROE = Array.from({ length: 5 }, (_, i) => {
-    if (i === 0) return roeYear1;
-    const w = i / 4;
-    return roe * (1 - w) + TARGET_ROE * w;
-  });
-
-  const operatingAssets      = totalAssets - cash;
-  const operatingLiabilities = totalAssets - equity;
-
-  // 推計有利子負債 = max(0, (総負債 - 現金) × 0.6)
-  // 総負債の約60%が有利子負債という仮定
-  const totalDebt    = totalAssets - equity;
-  const estimatedIBD = Math.max(0, (totalDebt - cash) * 0.6);
-
-  return {
-    bps, eps, nikkeiEps, roe, forecastROE,
-    totalAssets, equity,
-    operatingAssets, operatingLiabilities,
-    cash,
-    interestBearingDebt: estimatedIBD,  // 推計値（百万円）
-    shares,
-  };
-}
-
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const sector = searchParams.get("sector");
@@ -88,17 +20,7 @@ export async function GET(req: NextRequest) {
 
   if (!SB_URL) return NextResponse.json({ error: "SUPABASE_URL not set" }, { status: 500 });
 
-  const cols = [
-    "code", "name", "sector",
-    "price", "previous_close", "price_date", "fin_date",
-    "required_return", "updated_at",
-    "ta_raw", "eq_raw", "cash_raw", "np_raw",
-    "sh_out_raw", "tr_sh_raw", "avg_sh_raw",
-    "bps_raw", "eps_raw", "nxf_eps_raw",
-    "odp_raw", "nxf_op_raw",
-  ].join(",");
-
-  let url = `${SB_URL}/rest/v1/stocks?select=${cols}&limit=${limit}&offset=${offset}`;
+  let url = `${SB_URL}/rest/v1/stocks?select=*&limit=${limit}&offset=${offset}`;
   if (sector) url += `&sector=eq.${encodeURIComponent(sector)}`;
   if (codes)  url += `&code=in.(${codes.split(",").map(c => `"${c}"`).join(",")})`;
   if (search) url += `&or=(name.ilike.*${encodeURIComponent(search)}*,code.ilike.*${encodeURIComponent(search)}*)`;
@@ -117,32 +39,81 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: err }, { status: res.status });
     }
 
-    const data = (await res.json()) as Record<string, unknown>[];
+    const data = await res.json();
+    const stocks = (data as Record<string, unknown>[]).map(s => {
+      // ── 単位変換（生値→計算用） ──
+      // 生値は円単位 → ÷1,000,000 で百万円
+      // 株数は株単位 → ÷1,000 で千株
+      const taRaw   = toNum(s.ta_raw)   / 1_000_000;   // 総資産（百万円）
+      const eqRaw   = toNum(s.eq_raw)   / 1_000_000;   // 純資産（百万円）
+      const cashRaw = toNum(s.cash_raw) / 1_000_000;   // 現金（百万円）
+      const ibdRaw  = toNum(s.ibd_raw)  / 1_000_000;   // 有利子負債（百万円）
+      const opRaw   = toNum(s.op_raw)   / 1_000_000;   // 今期営業利益（百万円）
+      const nxfOpRaw= toNum(s.nxf_op_raw) / 1_000_000; // 来期予想営業利益（百万円）
+      const salesRaw   = toNum(s.sales_raw)     / 1_000_000;
+      const nxfSalesRaw= toNum(s.nxf_sales_raw) / 1_000_000;
+      const npRaw   = toNum(s.np_raw)   / 1_000_000;
 
-    const stocks = data.map(s => {
-      const calc = convertRow(s);
+      // 株式数（千株）
+      const shOutRaw = toNum(s.sh_out_raw) / 1_000;
+      const trShRaw  = toNum(s.tr_sh_raw)  / 1_000;
+      const sharesThousand = shOutRaw > trShRaw ? shOutRaw - trShRaw : shOutRaw;
+
+      // BPS / EPS
+      const bpsRaw = toNum(s.bps_raw);
+      const epsRaw = toNum(s.eps_raw);
+      const nxfEpsRaw = toNum(s.nxf_eps_raw);
+
+      // ROE
+      const bps = bpsRaw > 0 ? bpsRaw : (eqRaw > 0 && sharesThousand > 0 ? (eqRaw / sharesThousand) * 1000 : 0);
+      const eps = epsRaw;
+      const roe = bps > 0 ? eps / bps : (eqRaw > 0 && npRaw !== 0 ? npRaw / eqRaw : 0);
+
+      // 売上高成長率（今期→来期、上限20%）
+      const salesGrowthRate = salesRaw > 0 && nxfSalesRaw > 0
+        ? Math.min((nxfSalesRaw - salesRaw) / salesRaw, 0.20)
+        : 0;
+
+      // 有利子負債: ibd_rawがあれば使用、なければ推計（総負債×0.6）
+      const totalLiabilities = taRaw - eqRaw;
+      const interestBearingDebt = ibdRaw > 0
+        ? ibdRaw
+        : Math.max(totalLiabilities - cashRaw, 0) * 0.6;
+
+      // 正味営業資産 = (総資産 - 現金) - (総負債 - 有利子負債)
+      const operatingAssets      = taRaw - cashRaw;
+      const operatingLiabilities = totalLiabilities - interestBearingDebt;
+
+      // はっしゃん式用: nikkeiEps
+      const nxfOpM  = nxfOpRaw > 0 ? nxfOpRaw : opRaw;
+      const nikkeiEps = sharesThousand > 0 ? (nxfOpM * 0.7 / sharesThousand) * 1000 : 0;
+
       return {
-        code:                 s.code,
-        name:                 s.name,
-        sector:               s.sector,
-        price:                toNum(s.price),
-        previousClose:        toNum(s.previous_close),
-        priceDate:            s.price_date,
-        finDate:              s.fin_date,
-        bps:                  calc.bps,
-        eps:                  calc.eps,
-        nikkeiEps:            calc.nikkeiEps,
-        roe:                  calc.roe,
-        forecastROE:          calc.forecastROE,
-        totalAssets:          calc.totalAssets,
-        equity:               calc.equity,
-        operatingAssets:      calc.operatingAssets,
-        operatingLiabilities: calc.operatingLiabilities,
-        cash:                 calc.cash,
-        interestBearingDebt:  calc.interestBearingDebt,
-        shares:               calc.shares,
-        requiredReturn:       toNum(s.required_return) || 0.05,
-        lastUpdated:          s.updated_at,
+        code:           s.code,
+        name:           s.name,
+        sector:         s.sector,
+        price:          toNum(s.price),
+        previousClose:  toNum(s.previous_close),
+        priceDate:      s.price_date,
+        finDate:        s.fin_date,
+        bps,
+        eps,
+        nxfEps:         nxfEpsRaw,
+        nikkeiEps,
+        roe,
+        forecastROE:    s.forecast_roe ?? [],
+        totalAssets:    taRaw,
+        equity:         eqRaw,
+        operatingAssets,
+        operatingLiabilities,
+        operatingProfit:         opRaw,
+        forecastOperatingProfit: nxfOpRaw > 0 ? nxfOpRaw : opRaw,
+        cash:           cashRaw,
+        interestBearingDebt,
+        salesGrowthRate,
+        shares:         sharesThousand,
+        requiredReturn: toNum(s.required_return) || 0.05,
+        lastUpdated:    s.updated_at,
       };
     });
 
