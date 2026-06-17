@@ -51,7 +51,7 @@ async function fetchPriceRaw(code: string) {
 async function fetchWithRetry(url: string): Promise<Response> {
   const res = await fetch(url, { headers: JQ_H });
   if (res.status === 429) {
-    await sleep(3000);
+    await sleep(10000);
     return fetch(url, { headers: JQ_H });
   }
   return res;
@@ -162,7 +162,7 @@ async function upsertGrouped(records: Record<string, unknown>[]): Promise<{ succ
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const mode       = searchParams.get("mode") ?? "both"; // "price" | "fins" | "both"
+  const mode       = searchParams.get("mode") ?? "both";
   const startFrom  = parseInt(searchParams.get("from") ?? "0");
   const batchSize  = parseInt(searchParams.get("size") ?? "10");
   const debugCode  = searchParams.get("debug");
@@ -171,7 +171,6 @@ export async function GET(req: NextRequest) {
   if (!JQ_KEY) return NextResponse.json({ error: "JQUANTS_API_KEY not set" }, { status: 500 });
   if (!SB_URL) return NextResponse.json({ error: "SUPABASE_URL not set" }, { status: 500 });
 
-  // デバッグモード
   if (debugCode) {
     const type = searchParams.get("type") ?? "price";
     if (type === "fins") {
@@ -183,7 +182,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(await fetchPriceRaw(debugCode));
   }
 
-  // 対象銘柄の決定
   let targets: { code: string; name: string; sector: string }[];
   let total: number;
 
@@ -224,22 +222,19 @@ export async function GET(req: NextRequest) {
       let finsResult:  Awaited<ReturnType<typeof fetchFins>>  | null = null;
 
       if (mode === "price" || mode === "both") {
-        await sleep(1100);
+        await sleep(2000);
         priceResult = await fetchPrice(stock.code);
         if (!priceResult.ok) priceFailures.push({ code: stock.code, reason: priceResult.reason });
       }
 
       if (mode === "fins" || mode === "both") {
-        await sleep(1100);
+        await sleep(2000);
         finsResult = await fetchFins(stock.code);
         if (!finsResult.ok) finsFailures.push({ code: stock.code, reason: finsResult.reason });
       }
 
-      // 両方対象なのに両方失敗 → スキップ
       if (mode === "both" && priceResult && !priceResult.ok && finsResult && !finsResult.ok) continue;
-      // 価格のみモードで失敗 → スキップ
       if (mode === "price" && priceResult && !priceResult.ok) continue;
-      // 財務のみモードで失敗 → スキップ
       if (mode === "fins" && finsResult && !finsResult.ok) continue;
 
       const record: Record<string, unknown> = {
