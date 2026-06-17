@@ -1,126 +1,126 @@
 name: Daily Stock Batch
 
 on:
-  schedule:
-    - cron: "0 16 * * *"
-  workflow_dispatch: {}
+ schedule:
+   - cron: "0 16 * * *"
+ workflow_dispatch: {}
 
 jobs:
-  price-batch:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Run price batch
-        run: |
-          BASE="https://stock-valuation3.vercel.app"
-          FROM=0
-          SIZE=10
-          PRICE_FAIL_CODES=""
+ price-batch:
+   runs-on: ubuntu-latest
+   timeout-minutes: 60
+   steps:
+     - name: Run price batch
+       run: |
+         BASE="https://stock-valuation3.vercel.app"
+         FROM=0
+         SIZE=10
+         PRICE_FAIL_CODES=""
 
-          while :; do
-            echo "=== [価格] from=$FROM ==="
-            RES=$(curl -s -m 60 "$BASE/api/batch?mode=price&from=$FROM&size=$SIZE" || echo "")
+         while :; do
+           echo "=== [価格] from=$FROM ==="
+           RES=$(curl -s -m 60 "$BASE/api/batch?mode=price&from=$FROM&size=$SIZE" || echo "")
 
-            if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
-              echo "不正なレスポンス。30秒後にリトライ: $RES"
-              sleep 30
-              continue
-            fi
+           if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
+             echo "不正なレスポンス。30秒後にリトライ: $RES"
+             sleep 30
+             continue
+           fi
 
-            SUCCESS=$(echo "$RES" | jq -r '.success // 0')
-            PRICE_FAIL=$(echo "$RES" | jq -r '.priceFailCount // 0')
-            NEXTURL=$(echo "$RES" | jq -r '.nextUrl')
-            FROM=$(echo "$RES" | jq -r '.nextFrom')
+           SUCCESS=$(echo "$RES" | jq -r '.success // 0')
+           PRICE_FAIL=$(echo "$RES" | jq -r '.priceFailCount // 0')
+           NEXTURL=$(echo "$RES" | jq -r '.nextUrl')
+           FROM=$(echo "$RES" | jq -r '.nextFrom')
 
-            FAIL_CODES=$(echo "$RES" | jq -r '.priceFailures[]?.code // empty' | tr '\n' ',' | sed 's/,$//')
-            if [ -n "$FAIL_CODES" ]; then
-              PRICE_FAIL_CODES="${PRICE_FAIL_CODES:+$PRICE_FAIL_CODES,}$FAIL_CODES"
-            fi
+           FAIL_CODES=$(echo "$RES" | jq -r '.priceFailures[]?.code // empty' | tr '\n' ',' | sed 's/,$//')
+           if [ -n "$FAIL_CODES" ]; then
+             PRICE_FAIL_CODES="${PRICE_FAIL_CODES:+$PRICE_FAIL_CODES,}$FAIL_CODES"
+           fi
 
-            echo "成功:$SUCCESS 価格失敗:$PRICE_FAIL"
+           echo "成功:$SUCCESS 価格失敗:$PRICE_FAIL"
 
-            if [ "$NEXTURL" = "null" ]; then
-              echo "価格バッチ完了！"
-              break
-            fi
-            sleep 1
-          done
+           if [ "$NEXTURL" = "null" ]; then
+             echo "価格バッチ完了！"
+             break
+           fi
+           sleep 5
+         done
 
-          # 価格取得失敗銘柄を再実行
-          if [ -n "$PRICE_FAIL_CODES" ]; then
-            echo "=== 価格再実行: $PRICE_FAIL_CODES ==="
-            sleep 10
-            RETRY=$(curl -s -m 300 "$BASE/api/batch?mode=price&codes=$PRICE_FAIL_CODES" || echo "")
-            if echo "$RETRY" | jq -e . >/dev/null 2>&1; then
-              echo "再実行: 成功=$(echo $RETRY | jq -r '.success') 失敗=$(echo $RETRY | jq -r '.priceFailCount')"
-            fi
-          fi
+         # 価格取得失敗銘柄を再実行
+         if [ -n "$PRICE_FAIL_CODES" ]; then
+           echo "=== 価格再実行: $PRICE_FAIL_CODES ==="
+           sleep 10
+           RETRY=$(curl -s -m 300 "$BASE/api/batch?mode=price&codes=$PRICE_FAIL_CODES" || echo "")
+           if echo "$RETRY" | jq -e . >/dev/null 2>&1; then
+             echo "再実行: 成功=$(echo $RETRY | jq -r '.success') 失敗=$(echo $RETRY | jq -r '.priceFailCount')"
+           fi
+         fi
 
-  fins-batch:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    needs: price-batch
-    steps:
-      - name: Run fins batch
-        run: |
-          BASE="https://stock-valuation3.vercel.app"
-          FROM=0
-          SIZE=10
+ fins-batch:
+   runs-on: ubuntu-latest
+   timeout-minutes: 60
+   needs: price-batch
+   steps:
+     - name: Run fins batch
+       run: |
+         BASE="https://stock-valuation3.vercel.app"
+         FROM=0
+         SIZE=10
 
-          while :; do
-            echo "=== [財務] from=$FROM ==="
-            RES=$(curl -s -m 60 "$BASE/api/batch?mode=fins&from=$FROM&size=$SIZE" || echo "")
+         while :; do
+           echo "=== [財務] from=$FROM ==="
+           RES=$(curl -s -m 60 "$BASE/api/batch?mode=fins&from=$FROM&size=$SIZE" || echo "")
 
-            if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
-              echo "不正なレスポンス。30秒後にリトライ: $RES"
-              sleep 30
-              continue
-            fi
+           if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
+             echo "不正なレスポンス。30秒後にリトライ: $RES"
+             sleep 30
+             continue
+           fi
 
-            SUCCESS=$(echo "$RES" | jq -r '.success // 0')
-            FINS_FAIL=$(echo "$RES" | jq -r '.finsFailCount // 0')
-            NEXTURL=$(echo "$RES" | jq -r '.nextUrl')
-            FROM=$(echo "$RES" | jq -r '.nextFrom')
+           SUCCESS=$(echo "$RES" | jq -r '.success // 0')
+           FINS_FAIL=$(echo "$RES" | jq -r '.finsFailCount // 0')
+           NEXTURL=$(echo "$RES" | jq -r '.nextUrl')
+           FROM=$(echo "$RES" | jq -r '.nextFrom')
 
-            echo "成功:$SUCCESS 財務失敗:$FINS_FAIL"
+           echo "成功:$SUCCESS 財務失敗:$FINS_FAIL"
 
-            if [ "$NEXTURL" = "null" ]; then
-              echo "財務バッチ完了！"
-              break
-            fi
-            sleep 1
-          done
+           if [ "$NEXTURL" = "null" ]; then
+             echo "財務バッチ完了！"
+             break
+           fi
+           sleep 5
+         done
 
-  edinet-batch:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    needs: fins-batch
-    steps:
-      - name: Run EDINET batch (all stocks)
-        run: |
-          BASE="https://stock-valuation3.vercel.app"
-          FROM=0
-          SIZE=5
+ edinet-batch:
+   runs-on: ubuntu-latest
+   timeout-minutes: 180
+   needs: fins-batch
+   steps:
+     - name: Run EDINET batch (all stocks)
+       run: |
+         BASE="https://stock-valuation3.vercel.app"
+         FROM=0
+         SIZE=5
 
-          while :; do
-            echo "=== [EDINET] from=$FROM ==="
-            RES=$(curl -s -m 90 "$BASE/api/edinet-batch?from=$FROM&size=$SIZE" || echo "")
+         while :; do
+           echo "=== [EDINET] from=$FROM ==="
+           RES=$(curl -s -m 90 "$BASE/api/edinet-batch?from=$FROM&size=$SIZE" || echo "")
 
-            if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
-              echo "不正なレスポンス。30秒後にリトライ: $RES"
-              sleep 30
-              continue
-            fi
+           if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
+             echo "不正なレスポンス。30秒後にリトライ"
+             sleep 30
+             continue
+           fi
 
-            PROCESSED=$(echo "$RES" | jq -r '.processed // 0')
-            FROM=$(echo "$RES" | jq -r '.nextFrom // 0')
+           PROCESSED=$(echo "$RES" | jq -r '.processed // 0')
+           FROM=$(echo "$RES" | jq -r '.nextFrom // 0')
 
-            echo "$RES" | jq -r '.results[]? | "\(.code): \(.ibd) ok=\(.ok)"'
+           echo "$RES" | jq -r '.results[]? | "\(.code): \(.ibd) ok=\(.ok)"'
 
-            if [ "$PROCESSED" = "0" ] || [ "$PROCESSED" -lt "$SIZE" ]; then
-              echo "EDINETバッチ完了！"
-              break
-            fi
+           if [ "$PROCESSED" = "0" ] || [ "$PROCESSED" -lt "$SIZE" ]; then
+             echo "EDINETバッチ完了！"
+             break
+           fi
 
-            sleep 2
-          done
+           sleep 2
+         done
