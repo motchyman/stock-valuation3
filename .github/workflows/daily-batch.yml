@@ -8,72 +8,39 @@ on:
 jobs:
  price-batch:
    runs-on: ubuntu-latest
-   timeout-minutes: 60
+   timeout-minutes: 30
    steps:
-     - name: Run price batch
+     - name: Run price batch (全銘柄一括)
        run: |
          BASE="https://stock-valuation3.vercel.app"
-         FROM=0
-         SIZE=10
-         PRICE_FAIL_CODES=""
-
-         while :; do
-           echo "=== [価格] from=$FROM ==="
-           RES=$(curl -s -m 60 "$BASE/api/batch?mode=price&from=$FROM&size=$SIZE" || echo "")
-
-           if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
-             echo "不正なレスポンス。30秒後にリトライ: $RES"
-             sleep 30
-             continue
-           fi
-
-           SUCCESS=$(echo "$RES" | jq -r '.success // 0')
-           PRICE_FAIL=$(echo "$RES" | jq -r '.priceFailCount // 0')
-           NEXTURL=$(echo "$RES" | jq -r '.nextUrl')
-           FROM=$(echo "$RES" | jq -r '.nextFrom')
-
-           FAIL_CODES=$(echo "$RES" | jq -r '.priceFailures[]?.code // empty' | tr '\n' ',' | sed 's/,$//')
-           if [ -n "$FAIL_CODES" ]; then
-             PRICE_FAIL_CODES="${PRICE_FAIL_CODES:+$PRICE_FAIL_CODES,}$FAIL_CODES"
-           fi
-
-           echo "成功:$SUCCESS 価格失敗:$PRICE_FAIL"
-
-           if [ "$NEXTURL" = "null" ]; then
-             echo "価格バッチ完了！"
-             break
-           fi
-           sleep 5
-         done
-
-         # 価格取得失敗銘柄を再実行
-         if [ -n "$PRICE_FAIL_CODES" ]; then
-           echo "=== 価格再実行: $PRICE_FAIL_CODES ==="
-           sleep 10
-           RETRY=$(curl -s -m 300 "$BASE/api/batch?mode=price&codes=$PRICE_FAIL_CODES" || echo "")
-           if echo "$RETRY" | jq -e . >/dev/null 2>&1; then
-             echo "再実行: 成功=$(echo $RETRY | jq -r '.success') 失敗=$(echo $RETRY | jq -r '.priceFailCount')"
-           fi
+         echo "=== [株価] 全銘柄一括取得 ==="
+         RES=$(curl -s -m 1800 "$BASE/api/batch?mode=price" || echo "")
+         if echo "$RES" | jq -e . >/dev/null 2>&1; then
+           echo "成功: $(echo $RES | jq -r '.success')銘柄"
+           echo "合計: $(echo $RES | jq -r '.total')銘柄"
+         else
+           echo "失敗: $RES"
+           exit 1
          fi
 
  fins-batch:
    runs-on: ubuntu-latest
-   timeout-minutes: 60
+   timeout-minutes: 360
    needs: price-batch
    steps:
      - name: Run fins batch
        run: |
          BASE="https://stock-valuation3.vercel.app"
          FROM=0
-         SIZE=10
+         SIZE=3
 
          while :; do
            echo "=== [財務] from=$FROM ==="
-           RES=$(curl -s -m 60 "$BASE/api/batch?mode=fins&from=$FROM&size=$SIZE" || echo "")
+           RES=$(curl -s -m 55 "$BASE/api/batch?mode=fins&from=$FROM&size=$SIZE" || echo "")
 
            if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
-             echo "不正なレスポンス。30秒後にリトライ: $RES"
-             sleep 30
+             echo "不正なレスポンス。60秒後にリトライ: $RES"
+             sleep 60
              continue
            fi
 
@@ -100,11 +67,11 @@ jobs:
        run: |
          BASE="https://stock-valuation3.vercel.app"
          FROM=0
-         SIZE=5
+         SIZE=2
 
          while :; do
            echo "=== [EDINET] from=$FROM ==="
-           RES=$(curl -s -m 90 "$BASE/api/edinet-batch?from=$FROM&size=$SIZE" || echo "")
+           RES=$(curl -s -m 120 "$BASE/api/edinet-batch?from=$FROM&size=$SIZE" || echo "")
 
            if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
              echo "不正なレスポンス。30秒後にリトライ"
