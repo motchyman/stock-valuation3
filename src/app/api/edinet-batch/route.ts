@@ -1,13 +1,10 @@
 // src/app/api/edinet-batch/route.ts
-// 全銘柄の有利子負債をEDINETから取得してSupabaseに保存するバッチ
-// Vercelのタイムアウト(60秒)に対応するため、from/sizeで分割実行
 import { NextRequest, NextResponse } from "next/server";
 
 const EDINET_KEY = process.env.EDINET_API_KEY ?? "";
 const SB_URL     = process.env.SUPABASE_URL ?? "";
 const SB_KEY     = process.env.SUPABASE_ANON_KEY ?? "";
 
-// Supabaseから銘柄コード一覧を取得
 async function getCodes(from: number, size: number): Promise<{ code: string }[]> {
   const url = `${SB_URL}/rest/v1/stocks?select=code&order=code.asc&limit=${size}&offset=${from}`;
   const res = await fetch(url, {
@@ -17,7 +14,6 @@ async function getCodes(from: number, size: number): Promise<{ code: string }[]>
   return await res.json();
 }
 
-// EDINET書類一覧から有報を検索（直近400日）
 async function findLatestReport(secCode: string): Promise<{ docId: string; edinetCode: string } | null> {
   const today = new Date();
   for (let daysBack = 0; daysBack < 400; daysBack++) {
@@ -46,12 +42,11 @@ async function findLatestReport(secCode: string): Promise<{ docId: string; edine
   return null;
 }
 
-// XBRLから有利子負債を抽出
 async function getIBD(docId: string): Promise<number> {
   const IBD_TAGS = [
-    "ShortTermLoansPayable","CurrentPortionOfLongTermLoansPayable",
-    "ShortTermBondsPayable","BondsPayable","LongTermLoansPayable",
-    "BorrowingsCurrent","BorrowingsNoncurrent",
+    "ShortTermLoansPayable", "CurrentPortionOfLongTermLoansPayable",
+    "ShortTermBondsPayable", "BondsPayable", "LongTermLoansPayable",
+    "BorrowingsCurrent", "BorrowingsNoncurrent",
   ];
   try {
     const JSZip = (await import("jszip")).default;
@@ -61,25 +56,33 @@ async function getIBD(docId: string): Promise<number> {
     const zip = await JSZip.loadAsync(await res.arrayBuffer());
     let xbrl = "";
     for (const [name, file] of Object.entries(zip.files)) {
-      if (name.includes("PublicDoc/") && name.endsWith(".xbrl") &&
-          !name.match(/lab|cal|def|pre|_ref/)) {
+      if (
+        name.includes("PublicDoc/") &&
+        name.endsWith(".xbrl") &&
+        !name.match(/lab|cal|def|pre|_ref/)
+      ) {
         xbrl = await (file as import("jszip").JSZipObject).async("string");
         if (xbrl.length > 1000) break;
       }
     }
     if (!xbrl) return 0;
-    const CONTEXTS = ["ConsolidatedMember","CurrentYearInstant","FilingDateInstant"];
+
+    const CONTEXTS = ["ConsolidatedMember", "CurrentYearInstant", "FilingDateInstant"];
     let total = 0;
     const seen = new Set<string>();
+
     for (const tag of IBD_TAGS) {
       if (seen.has(tag)) continue;
-      const re = new RegExp(`<[^:]+:${tag}[^>]*contextRef="([^"]*)"[^>]*>\\s*([\\d.]+)\\s*</[^:]+:${tag}>`, "g");
+      const re = new RegExp(
+        `<[^:]+:${tag}[^>]*contextRef="([^"]*)"[^>]*>\\s*([\\d.]+)\\s*</[^:]+:${tag}>`,
+        "g"
+      );
       let best: number | null = null;
       let bestPri = 999;
-      let m;
+      let m: RegExpExecArray | null = null;
       while ((m = re.exec(xbrl)) !== null) {
-        const pri = CONTEXTS.findIndex(c => m[1].includes(c));
-        const val = parseFloat(m[2]);
+        const pri = CONTEXTS.findIndex(c => m![1].includes(c));
+        const val = parseFloat(m![2]);
         if (val > 0 && pri < bestPri) { best = val; bestPri = pri; }
       }
       if (best !== null) { total += best; seen.add(tag); }
@@ -88,7 +91,6 @@ async function getIBD(docId: string): Promise<number> {
   } catch { return 0; }
 }
 
-// Supabaseに保存
 async function save(code: string, ibdRaw: number, edinetCode: string) {
   await fetch(`${SB_URL}/rest/v1/stocks?code=eq.${code}`, {
     method: "PATCH",
@@ -105,7 +107,7 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const from = parseInt(searchParams.get("from") ?? "0");
-  const size = parseInt(searchParams.get("size") ?? "5"); // 1回5銘柄（タイムアウト対策）
+  const size = parseInt(searchParams.get("size") ?? "5");
 
   const codes = await getCodes(from, size);
   if (codes.length === 0) return NextResponse.json({ message: "完了", from, processed: 0 });
@@ -126,7 +128,8 @@ export async function GET(req: NextRequest) {
 
   const nextFrom = from + size;
   return NextResponse.json({
-    from, size,
+    from,
+    size,
     processed: codes.length,
     results,
     nextFrom,
