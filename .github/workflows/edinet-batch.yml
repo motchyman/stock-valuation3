@@ -1,0 +1,40 @@
+name: EDINET Daily Batch
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  edinet-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Run EDINET batch (all stocks)
+        run: |
+          BASE="https://stock-valuation3.vercel.app"
+          FROM=0
+          SIZE=5
+
+          while :; do
+            echo "=== [EDINET] from=$FROM ==="
+            RES=$(curl -s -m 90 "$BASE/api/edinet-batch?from=$FROM&size=$SIZE" || echo "")
+
+            if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
+              echo "不正なレスポンス。30秒後にリトライ"
+              sleep 30
+              continue
+            fi
+
+            PROCESSED=$(echo "$RES" | jq -r '.processed // 0')
+            FROM=$(echo "$RES" | jq -r '.nextFrom // 0')
+
+            echo "$RES" | jq -r '.results[]? | "\(.code): \(.ibd) ok=\(.ok)"'
+
+            if [ "$PROCESSED" = "0" ] || [ "$PROCESSED" -lt "$SIZE" ]; then
+              echo "EDINETバッチ完了！"
+              break
+            fi
+
+            sleep 2
+          done
