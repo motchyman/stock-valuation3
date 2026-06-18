@@ -1,40 +1,165 @@
-name: EDINET Daily Batch
+name: EDINET Init Batch
 
 on:
-  schedule:
-    - cron: "0 2 * * *"
   workflow_dispatch: {}
+  schedule:
+    - cron: "0 17 * * *"
 
 jobs:
-  edinet-batch:
+  edinet-init:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     steps:
-      - name: Run EDINET batch (all stocks)
+      - name: Install dependencies
+        run: npm install jszip node-fetch
+
+      - name: Run EDINET batch directly
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          BASE="https://stock-valuation3.vercel.app"
-          FROM=0
-          SIZE=5
+          node << 'EOF'
+          const https = require('https');
 
-          while :; do
-            echo "=== [EDINET] from=$FROM ==="
-            RES=$(curl -s -m 90 "$BASE/api/edinet-batch?from=$FROM&size=$SIZE" || echo "")
+          const EDINET_KEY = process.env.EDINET_API_KEY;
+          const SB_URL = process.env.SUPABASE_URL;
+          const SB_KEY = process.env.SUPABASE_ANON_KEY;
 
-            if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
-              echo "不正なレスポンス。30秒後にリトライ"
-              sleep 30
-              continue
-            fi
+          const fetch = (url, opts = {}) => new Promise((resolve, reject) => {
+            const u = new URL(url);
+            const req = https.request({
+              hostname: u.hostname, path: u.pathname + u.search,
+              method: opts.method || 'GET',
+              headers: opts.headers || {},
+              timeout: opts.timeout || 30000,
+            }, res => {
+              let data = [];
+              res.on('data', c => data.push(c));
+              res.on('end', () => resolve({
+                ok: res.statusCode < 300,
+                status: res.statusCode,
+                json: () => Promise.resolve(JSON.parse(Buffer.concat(data).toString())),
+                arrayBuffer: () => Promise.resolve(Buffer.concat(data).buffer),
+              }));
+            });
+            req.on('error', reject);
+            req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+            if (opts.body) req.write(opts.body);
+            req.end();
+          });
 
-            PROCESSED=$(echo "$RES" | jq -r '.processed // 0')
-            FROM=$(echo "$RES" | jq -r '.nextFrom // 0')
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-            echo "$RES" | jq -r '.results[]? | "\(.code): \(.ibd) ok=\(.ok)"'
+          async function getCodes() {
+            const url = `${SB_URL}/rest/v1/stocks?select=code&ibd_raw=eq.0&order=code.asc&limit=50`;
+            const res = await fetch(url, {
+              headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
+            });
+            if (!res.ok) return [];
+            return await res.json();
+          }
 
-            if [ "$PROCESSED" = "0" ] || [ "$PROCESSED" -lt "$SIZE" ]; then
-              echo "EDINETバッチ完了！"
-              break
-            fi
+          async function findReport(secCode) {
+            const today = new Date();
+            for (let d = 0; d < 400; d++) {
+              const dt = new Date(today);
+              dt.setDate(dt.getDate() - d);
+              if (dt.getDay() === 0 || dt.getDay() === 6) continue;
+              const dateStr = dt.toISOString().split('T')[0];
+              try {
+                const res = await fetch(
+                  `https://api.edinet-fsa.go.jp/api/v2/documents.json?date=${dateStr}&type=2&Subscription-Key=${EDINET_KEY}`,
+                  { timeout: 8000 }
+                );
+                if (!res.ok) continue;
+                const data = await res.json();
+                const doc = (data.results || []).find(r =>
+                  r.secCode === secCode.padEnd(5, '0') &&
+                  r.docTypeCode === '120' && r.xbrlFlag === '1' &&
+                  r.withdrawalStatus === '0' && r.disclosureStatus === '0'
+                );
+                if (doc) return { docId: doc.docID, edinetCode: doc.edinetCode };
+                await sleep(200);
+              } catch { continue; }
+            }
+            return null;
+          }
 
-            sleep 2
-          done
+          async function getIBD(docId) {
+            const TAGS = [
+              'ShortTermLoansPayable','CurrentPortionOfLongTermLoansPayable',
+              'ShortTermBondsPayable','BondsPayable','LongTermLoansPayable',
+              'BorrowingsCurrent','BorrowingsNoncurrent',
+            ];
+            try {
+              const JSZip = require('jszip');
+              const res = await fetch(
+                `https://api.edinet-fsa.go.jp/api/v2/documents/${docId}?type=1&Subscription-Key=${EDINET_KEY}`,
+                { timeout: 25000 }
+              );
+              if (!res.ok) return 0;
+              const buf = await res.arrayBuffer();
+              const zip = await JSZip.loadAsync(Buffer.from(buf));
+              let xbrl = '';
+              for (const [name, file] of Object.entries(zip.files)) {
+                if (name.includes('PublicDoc/') && name.endsWith('.xbrl') && !name.match(/lab|cal|def|pre|_ref/)) {
+                  xbrl = await file.async('string');
+                  if (xbrl.length > 1000) break;
+                }
+              }
+              if (!xbrl) return 0;
+              const CONTEXTS = ['ConsolidatedMember','CurrentYearInstant','FilingDateInstant'];
+              let total = 0;
+              const seen = new Set();
+              for (const tag of TAGS) {
+                if (seen.has(tag)) continue;
+                const re = new RegExp(`<[^:]+:${tag}[^>]*contextRef="([^"]*)"[^>]*>\\s*([\\d.]+)\\s*</[^:]+:${tag}>`, 'g');
+                let best = null, bestPri = 999, m;
+                while ((m = re.exec(xbrl)) !== null) {
+                  const pri = CONTEXTS.findIndex(c => m[1].includes(c));
+                  const val = parseFloat(m[2]);
+                  if (val > 0 && pri < bestPri) { best = val; bestPri = pri; }
+                }
+                if (best !== null) { total += best; seen.add(tag); }
+              }
+              return total;
+            } catch { return 0; }
+          }
+
+          async function save(code, ibdRaw, edinetCode) {
+            await fetch(`${SB_URL}/rest/v1/stocks?code=eq.${code}`, {
+              method: 'PATCH',
+              headers: {
+                apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
+                'Content-Type': 'application/json', Prefer: 'return=minimal',
+              },
+              body: JSON.stringify({ ibd_raw: ibdRaw, edinet_code: edinetCode }),
+            });
+          }
+
+          (async () => {
+            let totalOk = 0, totalFail = 0;
+            while (true) {
+              const codes = await getCodes();
+              if (codes.length === 0) {
+                console.log(`完了！成功:${totalOk} 失敗:${totalFail}`);
+                break;
+              }
+              for (const { code } of codes) {
+                try {
+                  const report = await findReport(code);
+                  if (!report) { totalFail++; console.log(`${code}: 有報なし`); continue; }
+                  const ibd = await getIBD(report.docId);
+                  await save(code, ibd, report.edinetCode);
+                  totalOk++;
+                  console.log(`${code}: ${Math.round(ibd/100000000)}億円 ✅`);
+                } catch(e) {
+                  totalFail++;
+                  console.log(`${code}: エラー ${e.message}`);
+                }
+                await sleep(1000);
+              }
+            }
+          })();
+          EOF
