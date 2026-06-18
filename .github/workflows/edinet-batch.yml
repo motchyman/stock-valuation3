@@ -52,7 +52,7 @@ jobs:
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
           async function getCodes() {
-            const url = `${SB_URL}/rest/v1/stocks?select=code&ibd_raw=eq.0&order=code.asc&limit=50`;
+            const url = `${SB_URL}/rest/v1/stocks?select=code&ibd_raw=is.null&order=code.asc&limit=50`;
             const res = await fetch(url, {
               headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
             });
@@ -149,7 +149,12 @@ jobs:
               for (const { code } of codes) {
                 try {
                   const report = await findReport(code);
-                  if (!report) { totalFail++; console.log(`${code}: 有報なし`); continue; }
+                  if (!report) {
+                    totalFail++;
+                    await save(code, -1, '');
+                    console.log(`${code}: 有報なし`);
+                    continue;
+                  }
                   const ibd = await getIBD(report.docId);
                   await save(code, ibd, report.edinetCode);
                   totalOk++;
