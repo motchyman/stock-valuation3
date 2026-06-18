@@ -35,7 +35,7 @@ jobs:
           FROM=$(( (DAY_OF_YEAR * SIZE) % TOTAL ))
 
           echo "=== [財務] 本日のfrom=$FROM (day=$DAY_OF_YEAR) ==="
-          RES=$(curl -s -m 55 "$BASE/api/batch?mode=fins&from=$FROM&size=$SIZE" || echo "")
+          RES=$(curl -s -m 300 "$BASE/api/batch?mode=fins&from=$FROM&size=$SIZE" || echo "")
 
           if echo "$RES" | jq -e . >/dev/null 2>&1; then
             echo "成功: $(echo $RES | jq -r '.success') 失敗: $(echo $RES | jq -r '.finsFailCount')"
