@@ -1,93 +1,74 @@
 name: Daily Stock Batch
 
 on:
- schedule:
-   - cron: "0 16 * * *"
- workflow_dispatch: {}
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch: {}
 
 jobs:
- price-batch:
-   runs-on: ubuntu-latest
-   timeout-minutes: 30
-   steps:
-     - name: Run price batch (全銘柄一括)
-       run: |
-         BASE="https://stock-valuation3.vercel.app"
-         echo "=== [株価] 全銘柄一括取得 ==="
-         RES=$(curl -s -m 1800 "$BASE/api/batch?mode=price" || echo "")
-         if echo "$RES" | jq -e . >/dev/null 2>&1; then
-           echo "成功: $(echo $RES | jq -r '.success')銘柄"
-           echo "合計: $(echo $RES | jq -r '.total')銘柄"
-         else
-           echo "失敗: $RES"
-           exit 1
-         fi
+  price-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Run price batch (全銘柄一括)
+        run: |
+          BASE="https://stock-valuation3.vercel.app"
+          echo "=== [株価] 全銘柄一括取得 ==="
+          RES=$(curl -s -m 1800 "$BASE/api/batch?mode=price" || echo "")
+          if echo "$RES" | jq -e . >/dev/null 2>&1; then
+            echo "成功: $(echo $RES | jq -r '.success')銘柄"
+          else
+            echo "失敗: $RES"
+          fi
 
- fins-batch:
-   runs-on: ubuntu-latest
-   timeout-minutes: 360
-   needs: price-batch
-   steps:
-     - name: Run fins batch
-       run: |
-         BASE="https://stock-valuation3.vercel.app"
-         FROM=0
-         SIZE=3
+  fins-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: price-batch
+    steps:
+      - name: Run fins batch (quarterly rotation)
+        run: |
+          BASE="https://stock-valuation3.vercel.app"
+          DAY_OF_YEAR=$(date +%j)
+          TOTAL=1586
+          SIZE=18
+          FROM=$(( (DAY_OF_YEAR * SIZE) % TOTAL ))
 
-         while :; do
-           echo "=== [財務] from=$FROM ==="
-           RES=$(curl -s -m 55 "$BASE/api/batch?mode=fins&from=$FROM&size=$SIZE" || echo "")
+          echo "=== [財務] 本日のfrom=$FROM (day=$DAY_OF_YEAR) ==="
+          RES=$(curl -s -m 55 "$BASE/api/batch?mode=fins&from=$FROM&size=$SIZE" || echo "")
 
-           if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
-             echo "不正なレスポンス。60秒後にリトライ: $RES"
-             sleep 60
-             continue
-           fi
+          if echo "$RES" | jq -e . >/dev/null 2>&1; then
+            echo "成功: $(echo $RES | jq -r '.success') 失敗: $(echo $RES | jq -r '.finsFailCount')"
+          else
+            echo "失敗: $RES"
+          fi
 
-           SUCCESS=$(echo "$RES" | jq -r '.success // 0')
-           FINS_FAIL=$(echo "$RES" | jq -r '.finsFailCount // 0')
-           NEXTURL=$(echo "$RES" | jq -r '.nextUrl')
-           FROM=$(echo "$RES" | jq -r '.nextFrom')
+  edinet-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: fins-batch
+    steps:
+      - name: Run EDINET batch
+        run: |
+          BASE="https://stock-valuation3.vercel.app"
+          DAY_OF_YEAR=$(date +%j)
+          TOTAL=1586
+          SIZE=5
+          FROM=$(( (DAY_OF_YEAR * SIZE) % TOTAL ))
 
-           echo "成功:$SUCCESS 財務失敗:$FINS_FAIL"
+          # ibd_raw=0の銘柄が残っていればinitモード、なければローテーション
+          INIT_CHECK=$(curl -s -m 10 "$BASE/api/edinet-batch?mode=init&size=1&from=0" || echo "")
+          if echo "$INIT_CHECK" | jq -e '.processed > 0' >/dev/null 2>&1; then
+            echo "=== [EDINET] initモード（未取得銘柄優先）==="
+            RES=$(curl -s -m 300 "$BASE/api/edinet-batch?mode=init&size=$SIZE" || echo "")
+          else
+            echo "=== [EDINET] ローテーションモード from=$FROM ==="
+            RES=$(curl -s -m 300 "$BASE/api/edinet-batch?from=$FROM&size=$SIZE" || echo "")
+          fi
 
-           if [ "$NEXTURL" = "null" ]; then
-             echo "財務バッチ完了！"
-             break
-           fi
-           sleep 5
-         done
-
- edinet-batch:
-   runs-on: ubuntu-latest
-   timeout-minutes: 180
-   needs: fins-batch
-   steps:
-     - name: Run EDINET batch (all stocks)
-       run: |
-         BASE="https://stock-valuation3.vercel.app"
-         FROM=0
-         SIZE=2
-
-         while :; do
-           echo "=== [EDINET] from=$FROM ==="
-           RES=$(curl -s -m 120 "$BASE/api/edinet-batch?from=$FROM&size=$SIZE" || echo "")
-
-           if ! echo "$RES" | jq -e . >/dev/null 2>&1; then
-             echo "不正なレスポンス。30秒後にリトライ"
-             sleep 30
-             continue
-           fi
-
-           PROCESSED=$(echo "$RES" | jq -r '.processed // 0')
-           FROM=$(echo "$RES" | jq -r '.nextFrom // 0')
-
-           echo "$RES" | jq -r '.results[]? | "\(.code): \(.ibd) ok=\(.ok)"'
-
-           if [ "$PROCESSED" = "0" ] || [ "$PROCESSED" -lt "$SIZE" ]; then
-             echo "EDINETバッチ完了！"
-             break
-           fi
-
-           sleep 2
-         done
+          if echo "$RES" | jq -e . >/dev/null 2>&1; then
+            echo "$RES" | jq -r '.results[]? | "\(.code): \(.ibd) ok=\(.ok)"'
+            echo "処理: $(echo $RES | jq -r '.processed')銘柄"
+          else
+            echo "失敗: $RES"
+          fi
