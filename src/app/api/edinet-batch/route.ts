@@ -5,7 +5,20 @@ const EDINET_KEY = process.env.EDINET_API_KEY ?? "";
 const SB_URL     = process.env.SUPABASE_URL ?? "";
 const SB_KEY     = process.env.SUPABASE_ANON_KEY ?? "";
 
-async function getCodes(from: number, size: number): Promise<{ code: string }[]> {
+async function getCodes(from: number, size: number, mode: string): Promise<{ code: string }[]> {
+  if (mode === "init") {
+    // ibd_rawが0の銘柄を優先取得
+    const url = `${SB_URL}/rest/v1/stocks?select=code&ibd_raw=eq.0&order=code.asc&limit=${size}`;
+    const res = await fetch(url, {
+      headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` },
+    } as RequestInit);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.length > 0) return data;
+    }
+    // 全銘柄埋まったら通常モードにフォールバック
+  }
+  // 通常モード
   const url = `${SB_URL}/rest/v1/stocks?select=code&order=code.asc&limit=${size}&offset=${from}`;
   const res = await fetch(url, {
     headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` },
@@ -22,14 +35,15 @@ async function findLatestReport(secCode: string): Promise<{ docId: string; edine
     if (d.getDay() === 0 || d.getDay() === 6) continue;
     const dateStr = d.toISOString().split("T")[0];
     try {
-      const url = `https://api.edinet-fsa.go.jp/api/v2/documents.json?date=${dateStr}&type=2&Subscription-Key=${EDINET_KEY}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      const res = await fetch(
+        `https://api.edinet-fsa.go.jp/api/v2/documents.json?date=${dateStr}&type=2&Subscription-Key=${EDINET_KEY}`,
+        { signal: AbortSignal.timeout(8000) }
+      );
       if (!res.ok) continue;
       const data = await res.json();
       if (!data.results) continue;
-      const secCode5 = secCode.padEnd(5, "0");
       const doc = data.results.find((r: Record<string, string>) =>
-        r.secCode === secCode5 &&
+        r.secCode === secCode.padEnd(5, "0") &&
         r.docTypeCode === "120" &&
         r.xbrlFlag === "1" &&
         r.withdrawalStatus === "0" &&
@@ -43,15 +57,17 @@ async function findLatestReport(secCode: string): Promise<{ docId: string; edine
 }
 
 async function getIBD(docId: string): Promise<number> {
-  const IBD_TAGS = [
+  const TAGS = [
     "ShortTermLoansPayable", "CurrentPortionOfLongTermLoansPayable",
     "ShortTermBondsPayable", "BondsPayable", "LongTermLoansPayable",
     "BorrowingsCurrent", "BorrowingsNoncurrent",
   ];
   try {
     const JSZip = (await import("jszip")).default;
-    const url = `https://api.edinet-fsa.go.jp/api/v2/documents/${docId}?type=1&Subscription-Key=${EDINET_KEY}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(25000) });
+    const res = await fetch(
+      `https://api.edinet-fsa.go.jp/api/v2/documents/${docId}?type=1&Subscription-Key=${EDINET_KEY}`,
+      { signal: AbortSignal.timeout(25000) }
+    );
     if (!res.ok) return 0;
     const zip = await JSZip.loadAsync(await res.arrayBuffer());
     let xbrl = "";
@@ -66,12 +82,10 @@ async function getIBD(docId: string): Promise<number> {
       }
     }
     if (!xbrl) return 0;
-
     const CONTEXTS = ["ConsolidatedMember", "CurrentYearInstant", "FilingDateInstant"];
     let total = 0;
     const seen = new Set<string>();
-
-    for (const tag of IBD_TAGS) {
+    for (const tag of TAGS) {
       if (seen.has(tag)) continue;
       const re = new RegExp(
         `<[^:]+:${tag}[^>]*contextRef="([^"]*)"[^>]*>\\s*([\\d.]+)\\s*</[^:]+:${tag}>`,
@@ -108,9 +122,12 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const from = parseInt(searchParams.get("from") ?? "0");
   const size = parseInt(searchParams.get("size") ?? "5");
+  const mode = searchParams.get("mode") ?? "normal";
 
-  const codes = await getCodes(from, size);
-  if (codes.length === 0) return NextResponse.json({ message: "完了", from, processed: 0 });
+  const codes = await getCodes(from, size, mode);
+  if (codes.length === 0) {
+    return NextResponse.json({ message: "完了", from, processed: 0, mode });
+  }
 
   const results: { code: string; ibd: number; ok: boolean }[] = [];
 
@@ -128,8 +145,7 @@ export async function GET(req: NextRequest) {
 
   const nextFrom = from + size;
   return NextResponse.json({
-    from,
-    size,
+    from, size, mode,
     processed: codes.length,
     results,
     nextFrom,
