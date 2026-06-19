@@ -11,9 +11,9 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Install dependencies
-        run: npm install jszip node-fetch
+        run: npm install jszip
 
-      - name: Run EDINET batch directly
+      - name: Run EDINET batch (date-based)
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -51,39 +51,28 @@ jobs:
 
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-          async function getCodes() {
-            const url = `${SB_URL}/rest/v1/stocks?select=code&ibd_raw=is.null&order=code.asc&limit=50`;
+          // Supabaseの全銘柄コード（4桁）をSetで取得（ibd_rawがまだNULLのもの）
+          async function getPendingCodes() {
+            const url = `${SB_URL}/rest/v1/stocks?select=code&ibd_raw=is.null&order=code.asc&limit=5000`;
             const res = await fetch(url, {
               headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
             });
-            if (!res.ok) return [];
-            return await res.json();
+            if (!res.ok) return new Set();
+            const data = await res.json();
+            return new Set(data.map(d => d.code));
           }
 
-          async function findReport(secCode) {
-            const today = new Date();
-            for (let d = 0; d < 400; d++) {
-              const dt = new Date(today);
-              dt.setDate(dt.getDate() - d);
-              if (dt.getDay() === 0 || dt.getDay() === 6) continue;
-              const dateStr = dt.toISOString().split('T')[0];
-              try {
-                const res = await fetch(
-                  `https://api.edinet-fsa.go.jp/api/v2/documents.json?date=${dateStr}&type=2&Subscription-Key=${EDINET_KEY}`,
-                  { timeout: 8000 }
-                );
-                if (!res.ok) continue;
-                const data = await res.json();
-                const doc = (data.results || []).find(r =>
-                  r.secCode === secCode.padEnd(5, '0') &&
-                  r.docTypeCode === '120' && r.xbrlFlag === '1' &&
-                  r.withdrawalStatus === '0' && r.disclosureStatus === '0'
-                );
-                if (doc) return { docId: doc.docID, edinetCode: doc.edinetCode };
-                await sleep(200);
-              } catch { continue; }
-            }
-            return null;
+          // 指定日の書類一覧を取得
+          async function getDocsForDate(dateStr) {
+            try {
+              const res = await fetch(
+                `https://api.edinet-fsa.go.jp/api/v2/documents.json?date=${dateStr}&type=2&Subscription-Key=${EDINET_KEY}`,
+                { timeout: 15000 }
+              );
+              if (!res.ok) return [];
+              const data = await res.json();
+              return data.results || [];
+            } catch { return []; }
           }
 
           async function getIBD(docId) {
@@ -139,32 +128,73 @@ jobs:
           }
 
           (async () => {
-            let totalOk = 0, totalFail = 0;
-            while (true) {
-              const codes = await getCodes();
-              if (codes.length === 0) {
-                console.log(`完了！成功:${totalOk} 失敗:${totalFail}`);
+            const pending = await getPendingCodes();
+            console.log(`未処理銘柄数: ${pending.size}`);
+            if (pending.size === 0) {
+              console.log('完了！処理対象なし');
+              return;
+            }
+
+            let totalOk = 0, totalDocsFound = 0;
+            const today = new Date();
+            const deadline = Date.now() + (340 * 60 * 1000); // 340分でタイムアウト前に切り上げ
+
+            // 直近400日を1日ずつ遡る（土日もEDINETは200を返すのでスキップしない）
+            for (let d = 0; d < 400 && pending.size > 0; d++) {
+              if (Date.now() > deadline) {
+                console.log('時間切れのため終了します。続きは次回実行で処理されます。');
                 break;
               }
-              for (const { code } of codes) {
+
+              const dt = new Date(today);
+              dt.setDate(dt.getDate() - d);
+              const dateStr = dt.toISOString().split('T')[0];
+
+              const docs = await getDocsForDate(dateStr);
+              if (docs.length === 0) { await sleep(150); continue; }
+
+              // この日の有報(120)のうち、未処理銘柄に該当するものだけ処理
+              const matches = docs.filter(doc =>
+                doc.docTypeCode === '120' &&
+                doc.xbrlFlag === '1' &&
+                doc.withdrawalStatus === '0' &&
+                doc.disclosureStatus === '0' &&
+                doc.secCode &&
+                pending.has(doc.secCode.slice(0, 4))
+              );
+
+              if (matches.length > 0) {
+                console.log(`--- ${dateStr}: ${matches.length}件の対象書類を発見 ---`);
+              }
+
+              for (const doc of matches) {
+                const code4 = doc.secCode.slice(0, 4);
+                if (!pending.has(code4)) continue; // 同日内の重複対策
                 try {
-                  const report = await findReport(code);
-                  if (!report) {
-                    totalFail++;
-                    await save(code, -1, '');
-                    console.log(`${code}: 有報なし`);
-                    continue;
-                  }
-                  const ibd = await getIBD(report.docId);
-                  await save(code, ibd, report.edinetCode);
+                  const ibd = await getIBD(doc.docID);
+                  await save(code4, ibd, doc.edinetCode);
+                  pending.delete(code4);
                   totalOk++;
-                  console.log(`${code}: ${Math.round(ibd/100000000)}億円 ✅`);
-                } catch(e) {
-                  totalFail++;
-                  console.log(`${code}: エラー ${e.message}`);
+                  totalDocsFound++;
+                  console.log(`${code4}: ${Math.round(ibd/100000000)}億円 ✅ (残り${pending.size})`);
+                } catch (e) {
+                  console.log(`${code4}: エラー ${e.message}`);
                 }
-                await sleep(1000);
+                await sleep(800);
+              }
+
+              await sleep(150);
+            }
+
+            // 400日探しても見つからなかった銘柄は -1 でマーク（有報なし扱い）
+            if (pending.size > 0) {
+              console.log(`=== 残り${pending.size}銘柄は有報未発見のため -1 でマーク ===`);
+              for (const code of pending) {
+                await save(code, -1, '');
+                await sleep(200);
               }
             }
+
+            console.log(`完了！取得成功:${totalOk}件`);
           })();
           EOF
