@@ -54,6 +54,7 @@ export interface ValuationResult extends StockData {
   pbr: number;
   roa: number;
   assetAdjRatio: number;
+  effectiveR: number; // 実際に使われたr（動的計算結果 or 個別設定値）
 }
 
 // ── 東証プライム主要銘柄 ─────────────────────────────────────────────
@@ -82,7 +83,9 @@ export const YAHOO_CODES: Record<string, string> = {
 };
 
 export const PRIME_STOCKS_LIST = PRIME_STOCKS.map(s => ({
-  code: s.code, name: s.name, sector: s.sector,
+  code: s.code,
+  name: s.name,
+  sector: s.sector,
   yahoo: YAHOO_CODES[s.code] ?? `${s.code}.T`,
 }));
 
@@ -122,7 +125,6 @@ export function calcValuation(
   _payoutRatio: number = 0.3,
   _ibdK: number = 0
 ): ValuationResult {
-  const r       = safe(stock.requiredReturn) || 0.05;
   const taxRate = safe(stock.taxRate) || 0.30;
   const sharesK = safe(stock.shares); // 千株
 
@@ -130,12 +132,24 @@ export function calcValuation(
   const toPS = (millionYen: number): number =>
     sharesK > 0 ? (safe(millionYen) / sharesK) * 1000 : 0;
 
-  // ── 共通指標 ────────────────────────────────────────────────────────
+  // ── 共通指標 ──────────────────────────────────────────────────────
   const pbr = safe(stock.bps) > 0 ? safe(stock.price) / safe(stock.bps) : 0;
   const equityRatio = safe(stock.totalAssets) > 0
     ? safe(stock.equity) / safe(stock.totalAssets) : 0;
 
-  // ── はっしゃん式 ────────────────────────────────────────────────────
+  // ── r（要求利回り）の動的計算 ────────────────────────────────────
+  // 誌面脚注（p.59）: 株主要求利回り8% × 自己資本比率
+  //                  + 負債金利3%×(1-実効税率) × (1-自己資本比率)
+  // ユーザーが個別にrequiredReturnを設定（デフォルト5%以外）している場合はそれを優先
+  const dynamicR = equityRatio > 0
+    ? 0.08 * equityRatio + 0.03 * (1 - taxRate) * (1 - equityRatio)
+    : 0.05;
+  const userSetR = safe(stock.requiredReturn);
+  const r = (userSetR > 0 && Math.abs(userSetR - 0.05) > 0.0001)
+    ? userSetR
+    : Math.max(0.03, Math.min(0.10, dynamicR)); // 3%〜10%にクリップ
+
+  // ── はっしゃん式 ──────────────────────────────────────────────────
   const nikkeiEps = safe(stock.nikkeiEps) > 0 ? safe(stock.nikkeiEps) : safe(stock.eps);
   const bpsPerEqRatio = equityRatio > 0 ? safe(stock.bps) / equityRatio : 0;
   const roa = bpsPerEqRatio > 0 ? nikkeiEps / bpsPerEqRatio : 0;
@@ -156,7 +170,6 @@ export function calcValuation(
   // ── 日経マネー式RIM ───────────────────────────────────────────────
   const totalLiabilities = safe(stock.totalAssets) - safe(stock.equity);
 
-  // 有利子負債: ibd_rawがあれば使用、なければ総負債の40%と推計
   const ibd = safe(stock.interestBearingDebt) > 0
     ? safe(stock.interestBearingDebt)
     : totalLiabilities * 0.4;
@@ -174,17 +187,13 @@ export function calcValuation(
   const netFinancialAssets   = safe(stock.cash) - ibd;
   const netFinancialAssetsPS = toPS(netFinancialAssets);
 
-  // 営業利益（百万円）
   const opProfit = safe(stock.operatingProfit) > 0
     ? safe(stock.operatingProfit)
     : safe(stock.eps) * sharesK / 1_000;
 
   const nopat0 = opProfit * (1 - taxRate);
-  // 残余事業利益 = NOPAT - 正味営業資産 × 要求利回り
-  const rei0 = nopat0 - netOperatingAssets * r;
-
-  // 成長率（売上高成長率、上限20%）
-  const g = Math.min(Math.max(safe(stock.salesGrowthRate) || 0, 0), 0.20);
+  const rei0   = nopat0 - netOperatingAssets * r;
+  const g      = Math.min(Math.max(safe(stock.salesGrowthRate) || 0, 0), 0.20);
 
   let pvSum = 0;
   const reiByYear: { year: number; roe: number; rei: number; pv: number }[] = [];
@@ -197,14 +206,24 @@ export function calcValuation(
     reiByYear.push({ year: i + 1, roe: safe(stock.roe), rei: Math.round(rei_ps), pv: Math.round(pv) });
   }
 
-  // 終端価値: 予測期間後は残余事業利益がゼロに収束すると仮定（保守的）
-  // terminalGrowthRate > 0 の場合のみ Gordon Growth Model を適用、上限は pvSum の2倍
+  // ── 終端価値: 予測期間後、5年かけて成長率が0まで緩やかに減衰 ────────
+  // 誌面（p.59）: 「利益成長は最大5期先まで。その後はゆるやかに減少」
   let terminalPV = 0;
-  if (terminalGrowthRate > 0 && r > terminalGrowthRate) {
-    const terminalREI_ps = toPS(rei0 * Math.pow(1 + g, forecastYears));
-    const raw = (terminalREI_ps / (r - terminalGrowthRate)) / Math.pow(1 + r, forecastYears);
-    // 終端価値は予測期間PV合計の2倍を上限とする（暴発防止）
-    terminalPV = Math.max(0, Math.min(raw, Math.abs(pvSum) * 2));
+  if (terminalGrowthRate > 0 && r > 0) {
+    const decayYears = 5;
+    const baseValue = rei0 * Math.pow(1 + g, forecastYears); // 予測期間末の残余事業利益（百万円）
+    let cumulativeGrowth = 1;
+    for (let j = 0; j < decayYears; j++) {
+      // j年目の成長率: terminalGrowthRateから線形に0まで減衰
+      const decayG = terminalGrowthRate * (1 - (j + 1) / decayYears);
+      cumulativeGrowth *= (1 + decayG);
+      const rei_j = baseValue * cumulativeGrowth;
+      const rei_j_ps = toPS(rei_j);
+      const pv_j = rei_j_ps / Math.pow(1 + r, forecastYears + j + 1);
+      terminalPV += pv_j;
+    }
+    // 予測期間PV合計の2倍を上限とする（暴発防止）
+    terminalPV = Math.max(0, Math.min(terminalPV, Math.abs(pvSum) * 2));
   }
   pvSum += terminalPV;
 
@@ -230,5 +249,6 @@ export function calcValuation(
     roa,
     assetAdjRatio,
     nikkeiEps,
+    effectiveR: r,
   };
 }
