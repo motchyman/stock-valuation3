@@ -41,8 +41,6 @@ export async function GET(req: NextRequest) {
 
     const data = await res.json();
     const stocks = (data as Record<string, unknown>[]).map(s => {
-      // J-Quantsは円単位 → ÷1,000,000 で百万円
-      // 株数は株単位  → ÷1,000 で千株
       const taRaw       = toNum(s.ta_raw)         / 1_000_000;
       const eqRaw       = toNum(s.eq_raw)         / 1_000_000;
       const cashRaw     = toNum(s.cash_raw)       / 1_000_000;
@@ -52,9 +50,14 @@ export async function GET(req: NextRequest) {
       const salesRaw    = toNum(s.sales_raw)      / 1_000_000;
       const nxfSalesRaw = toNum(s.nxf_sales_raw)  / 1_000_000;
 
-      // ibd_raw: NULL（未取得）/ -1（有報なし）/ 0（無借金確認済み）/ 正の値 を区別
       const ibdRawValue = s.ibd_raw;
       const ibdRaw       = toNum(s.ibd_raw) / 1_000_000;
+
+      // EDINETから取得した個別BS項目（NULL/-1/0/正の値を区別）
+      const opAssetsRawValue   = s.op_assets_raw;
+      const opLiabRawValue     = s.op_liab_raw;
+      const opAssetsFromEdinet = toNum(s.op_assets_raw) / 1_000_000;
+      const opLiabFromEdinet   = toNum(s.op_liab_raw)   / 1_000_000;
 
       const shOutRaw = toNum(s.sh_out_raw) / 1_000;
       const trShRaw  = toNum(s.tr_sh_raw)  / 1_000;
@@ -89,8 +92,21 @@ export async function GET(req: NextRequest) {
           ? Math.max(totalLiabilities - cashRaw, 0) * 0.6
           : Math.max(ibdRaw, 0);
 
-      const operatingAssets      = taRaw - cashRaw;
-      const operatingLiabilities = totalLiabilities - interestBearingDebt;
+      // 営業資産・営業負債:
+      //   - EDINETの個別BS項目（売上債権・棚卸資産・有形固定資産 等の積み上げ）が
+      //     取得済み（0以上）ならそれを最優先で使用
+      //   - 未取得（NULL）または取得失敗（-1）の場合は簡易推計にフォールバック
+      const hasEdinetBS =
+        opAssetsRawValue !== null && opAssetsRawValue !== undefined &&
+        opLiabRawValue   !== null && opLiabRawValue   !== undefined &&
+        opAssetsFromEdinet >= 0;
+
+      const operatingAssets = hasEdinetBS
+        ? opAssetsFromEdinet
+        : taRaw - cashRaw;
+      const operatingLiabilities = hasEdinetBS
+        ? Math.max(opLiabFromEdinet, 0)
+        : totalLiabilities - interestBearingDebt;
 
       const nxfOpForCalc = nxfOpRaw > 0 ? nxfOpRaw : opRaw;
       const nikkeiEps = sharesThousand > 0
