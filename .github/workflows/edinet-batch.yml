@@ -51,9 +51,9 @@ jobs:
 
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-          // Supabaseの全銘柄コード（4桁）をSetで取得（ibd_rawがまだNULLのもの）
+          // ── 営業資産/負債が未取得の銘柄を取得 ──────────────────────────
           async function getPendingCodes() {
-            const url = `${SB_URL}/rest/v1/stocks?select=code&ibd_raw=is.null&order=code.asc&limit=5000`;
+            const url = `${SB_URL}/rest/v1/stocks?select=code&op_assets_raw=is.null&order=code.asc&limit=5000`;
             const res = await fetch(url, {
               headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
             });
@@ -62,7 +62,6 @@ jobs:
             return new Set(data.map(d => d.code));
           }
 
-          // 指定日の書類一覧を取得
           async function getDocsForDate(dateStr) {
             try {
               const res = await fetch(
@@ -75,19 +74,54 @@ jobs:
             } catch { return []; }
           }
 
-          async function getIBD(docId) {
-            const TAGS = [
-              'ShortTermLoansPayable','CurrentPortionOfLongTermLoansPayable',
-              'ShortTermBondsPayable','BondsPayable','LongTermLoansPayable',
-              'BorrowingsCurrent','BorrowingsNoncurrent',
-            ];
+          // ── XBRLから有利子負債・営業資産・営業負債を一括抽出 ──────────────
+          const IBD_TAGS = [
+            'ShortTermLoansPayable', 'CurrentPortionOfLongTermLoansPayable',
+            'ShortTermBondsPayable', 'BondsPayable', 'LongTermLoansPayable',
+            'BorrowingsCurrent', 'BorrowingsNoncurrent',
+          ];
+          // 営業資産: 売上債権・棚卸資産・有形固定資産・無形固定資産
+          const OP_ASSET_TAGS = [
+            'NotesAndAccountsReceivableTrade',
+            'NotesAndAccountsReceivableTradeAndContractAssets',
+            'AccountsReceivableTrade',
+            'Inventories',
+            'PropertyPlantAndEquipment',
+            'IntangibleAssets',
+          ];
+          // 営業負債: 仕入債務・前受金・未払費用
+          const OP_LIAB_TAGS = [
+            'NotesAndAccountsPayableTrade',
+            'AccountsPayableTrade',
+            'AdvancesReceived',
+            'AccruedExpenses',
+          ];
+
+          function extractTagSum(xbrl, tags, contexts) {
+            let total = 0;
+            const seen = new Set();
+            for (const tag of tags) {
+              if (seen.has(tag)) continue;
+              const re = new RegExp(`<[^:]+:${tag}[^>]*contextRef="([^"]*)"[^>]*>\\s*([\\d.]+)\\s*</[^:]+:${tag}>`, 'g');
+              let best = null, bestPri = 999, m;
+              while ((m = re.exec(xbrl)) !== null) {
+                const pri = contexts.findIndex(c => m[1].includes(c));
+                const val = parseFloat(m[2]);
+                if (val > 0 && pri < bestPri) { best = val; bestPri = pri; }
+              }
+              if (best !== null) { total += best; seen.add(tag); }
+            }
+            return total;
+          }
+
+          async function getBalanceSheetData(docId) {
             try {
               const JSZip = require('jszip');
               const res = await fetch(
                 `https://api.edinet-fsa.go.jp/api/v2/documents/${docId}?type=1&Subscription-Key=${EDINET_KEY}`,
                 { timeout: 25000 }
               );
-              if (!res.ok) return 0;
+              if (!res.ok) return null;
               const buf = await res.arrayBuffer();
               const zip = await JSZip.loadAsync(Buffer.from(buf));
               let xbrl = '';
@@ -97,33 +131,31 @@ jobs:
                   if (xbrl.length > 1000) break;
                 }
               }
-              if (!xbrl) return 0;
-              const CONTEXTS = ['ConsolidatedMember','CurrentYearInstant','FilingDateInstant'];
-              let total = 0;
-              const seen = new Set();
-              for (const tag of TAGS) {
-                if (seen.has(tag)) continue;
-                const re = new RegExp(`<[^:]+:${tag}[^>]*contextRef="([^"]*)"[^>]*>\\s*([\\d.]+)\\s*</[^:]+:${tag}>`, 'g');
-                let best = null, bestPri = 999, m;
-                while ((m = re.exec(xbrl)) !== null) {
-                  const pri = CONTEXTS.findIndex(c => m[1].includes(c));
-                  const val = parseFloat(m[2]);
-                  if (val > 0 && pri < bestPri) { best = val; bestPri = pri; }
-                }
-                if (best !== null) { total += best; seen.add(tag); }
-              }
-              return total;
-            } catch { return 0; }
+              if (!xbrl) return null;
+
+              const CONTEXTS = ['ConsolidatedMember', 'CurrentYearInstant', 'FilingDateInstant'];
+
+              const ibd     = extractTagSum(xbrl, IBD_TAGS, CONTEXTS);
+              const opAsset = extractTagSum(xbrl, OP_ASSET_TAGS, CONTEXTS);
+              const opLiab  = extractTagSum(xbrl, OP_LIAB_TAGS, CONTEXTS);
+
+              return { ibd, opAsset, opLiab };
+            } catch { return null; }
           }
 
-          async function save(code, ibdRaw, edinetCode) {
+          async function save(code, ibdRaw, edinetCode, opAssetRaw, opLiabRaw) {
             await fetch(`${SB_URL}/rest/v1/stocks?code=eq.${code}`, {
               method: 'PATCH',
               headers: {
                 apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
                 'Content-Type': 'application/json', Prefer: 'return=minimal',
               },
-              body: JSON.stringify({ ibd_raw: ibdRaw, edinet_code: edinetCode }),
+              body: JSON.stringify({
+                ibd_raw: ibdRaw,
+                edinet_code: edinetCode,
+                op_assets_raw: opAssetRaw,
+                op_liab_raw: opLiabRaw,
+              }),
             });
           }
 
@@ -135,11 +167,10 @@ jobs:
               return;
             }
 
-            let totalOk = 0, totalDocsFound = 0;
+            let totalOk = 0;
             const today = new Date();
-            const deadline = Date.now() + (340 * 60 * 1000); // 340分でタイムアウト前に切り上げ
+            const deadline = Date.now() + (340 * 60 * 1000);
 
-            // 直近400日を1日ずつ遡る（土日もEDINETは200を返すのでスキップしない）
             for (let d = 0; d < 400 && pending.size > 0; d++) {
               if (Date.now() > deadline) {
                 console.log('時間切れのため終了します。続きは次回実行で処理されます。');
@@ -153,7 +184,6 @@ jobs:
               const docs = await getDocsForDate(dateStr);
               if (docs.length === 0) { await sleep(150); continue; }
 
-              // この日の有報(120)のうち、未処理銘柄に該当するものだけ処理
               const matches = docs.filter(doc =>
                 doc.docTypeCode === '120' &&
                 doc.xbrlFlag === '1' &&
@@ -169,14 +199,19 @@ jobs:
 
               for (const doc of matches) {
                 const code4 = doc.secCode.slice(0, 4);
-                if (!pending.has(code4)) continue; // 同日内の重複対策
+                if (!pending.has(code4)) continue;
                 try {
-                  const ibd = await getIBD(doc.docID);
-                  await save(code4, ibd, doc.edinetCode);
-                  pending.delete(code4);
-                  totalOk++;
-                  totalDocsFound++;
-                  console.log(`${code4}: ${Math.round(ibd/100000000)}億円 ✅ (残り${pending.size})`);
+                  const bs = await getBalanceSheetData(doc.docID);
+                  if (!bs) {
+                    await save(code4, -1, '', -1, -1);
+                    pending.delete(code4);
+                    console.log(`${code4}: BS取得失敗 -1マーク`);
+                  } else {
+                    await save(code4, bs.ibd, doc.edinetCode, bs.opAsset, bs.opLiab);
+                    pending.delete(code4);
+                    totalOk++;
+                    console.log(`${code4}: 営業資産${Math.round(bs.opAsset/100000000)}億 営業負債${Math.round(bs.opLiab/100000000)}億 ✅ (残り${pending.size})`);
+                  }
                 } catch (e) {
                   console.log(`${code4}: エラー ${e.message}`);
                 }
@@ -186,11 +221,10 @@ jobs:
               await sleep(150);
             }
 
-            // 400日探しても見つからなかった銘柄は -1 でマーク（有報なし扱い）
             if (pending.size > 0) {
               console.log(`=== 残り${pending.size}銘柄は有報未発見のため -1 でマーク ===`);
               for (const code of pending) {
-                await save(code, -1, '');
+                await save(code, -1, '', -1, -1);
                 await sleep(200);
               }
             }
