@@ -29,7 +29,7 @@ export interface StockData {
   taxRate?: number;                // 実効税率（デフォルト0.30）
   // 株式
   shares: number;                  // 発行済株式数（自己株除く、千株）
-  requiredReturn: number;
+  requiredReturn: number;          // 0 = ユーザー未設定（動的r計算を使用）、正の値 = ユーザー個別設定
   lastUpdated?: string;
   priceDate?: string;
   error?: string;
@@ -54,7 +54,7 @@ export interface ValuationResult extends StockData {
   pbr: number;
   roa: number;
   assetAdjRatio: number;
-  effectiveR: number; // 実際に使われたr（動的計算結果 or 個別設定値）
+  effectiveR: number; // 実際に使われたr（動的計算結果 or ユーザー個別設定値）
 }
 
 // ── 東証プライム主要銘柄 ─────────────────────────────────────────────
@@ -140,12 +140,13 @@ export function calcValuation(
   // ── r（要求利回り）の動的計算 ────────────────────────────────────
   // 誌面脚注（p.59）: 株主要求利回り8% × 自己資本比率
   //                  + 負債金利3%×(1-実効税率) × (1-自己資本比率)
-  // ユーザーが個別にrequiredReturnを設定（デフォルト5%以外）している場合はそれを優先
+  // requiredReturn = 0 はユーザー未設定を意味し、動的計算（dynamicR）を使用
+  // requiredReturn > 0 はユーザーが個別設定した値を最優先で使用
   const dynamicR = equityRatio > 0
     ? 0.08 * equityRatio + 0.03 * (1 - taxRate) * (1 - equityRatio)
     : 0.05;
   const userSetR = safe(stock.requiredReturn);
-  const r = (userSetR > 0 && Math.abs(userSetR - 0.05) > 0.0001)
+  const r = userSetR > 0
     ? userSetR
     : Math.max(0.03, Math.min(0.10, dynamicR)); // 3%〜10%にクリップ
 
