@@ -15,18 +15,18 @@ export interface StockData {
   // バランスシート（百万円）
   totalAssets: number;
   equity: number;
-  cash: number;
-  interestBearingDebt: number;
+  cash: number;                    // 現金及び現金同等物（＋有価証券）
+  interestBearingDebt: number;     // 有利子負債
   // 営業損益（百万円）
-  operatingProfit?: number;
-  forecastOperatingProfit?: number;
-  operatingAssets?: number;
-  operatingLiabilities?: number;
+  operatingProfit?: number;        // 今期営業利益
+  forecastOperatingProfit?: number;// 来期予想営業利益
+  operatingAssets?: number;        // 営業資産 = 総資産 - 現金
+  operatingLiabilities?: number;   // 営業負債 = 総負債 - 有利子負債
   // はっしゃん式用
   nikkeiEps?: number;              // 計算用EPS（予想経常利益×0.7÷株数）
   // 成長率
-  salesGrowthRate?: number;
-  taxRate?: number;
+  salesGrowthRate?: number;        // 売上高成長率（小数）
+  taxRate?: number;                // 実効税率（デフォルト0.30）
   // 株式
   shares: number;                  // 発行済株式数（自己株除く、千株）
   requiredReturn: number;
@@ -136,57 +136,55 @@ export function calcValuation(
     ? safe(stock.equity) / safe(stock.totalAssets) : 0;
 
   // ── はっしゃん式 ────────────────────────────────────────────────────
-  // 計算用EPS: nikkeiEps(経常×0.7÷株) があれば使用、なければeps
   const nikkeiEps = safe(stock.nikkeiEps) > 0 ? safe(stock.nikkeiEps) : safe(stock.eps);
-
-  // ROA = 計算用EPS ÷ (BPS ÷ 自己資本比率)
   const bpsPerEqRatio = equityRatio > 0 ? safe(stock.bps) / equityRatio : 0;
   const roa = bpsPerEqRatio > 0 ? nikkeiEps / bpsPerEqRatio : 0;
   const roaCapped = Math.min(roa, 0.30);
-
-  // 財務レバレッジ補正
   let leverage: number;
   if (equityRatio >= 0.667)      leverage = 1.0;
   else if (equityRatio >= 0.334) leverage = 1 / (equityRatio + 0.333);
   else                           leverage = 1.5;
-
-  // 事業価値
   const nikkeiBusinessValue = nikkeiEps * 15 * roaCapped * 10 * leverage;
-
-  // 資産価値
   const assetAdjRatio = calcAssetDiscountRate(equityRatio);
   const nikkeiAssetValue = safe(stock.bps) * assetAdjRatio;
-
-  // 市場リスク
   const riskRate = calcMarketRiskRate(pbr);
   const nikkeiMarketRisk = (nikkeiBusinessValue + nikkeiAssetValue) * riskRate;
-
   const nikkeiTheoretical = Math.max(0, nikkeiBusinessValue + nikkeiAssetValue - nikkeiMarketRisk);
   const nikkeiUpdownPct = safe(stock.price) > 0
-    ? ((nikkeiTheoretical / safe(stock.price) - 1) * 100).toFixed(1)
-    : "0.0";
+    ? ((nikkeiTheoretical / safe(stock.price) - 1) * 100).toFixed(1) : "0.0";
 
-  // ── 日経マネー式RIM ─────────────────────────────────────────────────
+  // ── 日経マネー式RIM ───────────────────────────────────────────────
   const totalLiabilities = safe(stock.totalAssets) - safe(stock.equity);
+
+  // 有利子負債: ibd_rawがあれば使用、なければ総負債の40%と推計
+  const ibd = safe(stock.interestBearingDebt) > 0
+    ? safe(stock.interestBearingDebt)
+    : totalLiabilities * 0.4;
+
   const opAssets = safe(stock.operatingAssets) > 0
     ? safe(stock.operatingAssets)
     : safe(stock.totalAssets) - safe(stock.cash);
   const opLiabilities = safe(stock.operatingLiabilities) > 0
     ? safe(stock.operatingLiabilities)
-    : totalLiabilities - safe(stock.interestBearingDebt);
+    : totalLiabilities - ibd;
+
   const netOperatingAssets   = opAssets - opLiabilities;
   const netOperatingAssetsPS = toPS(netOperatingAssets);
 
-  const netFinancialAssets   = safe(stock.cash) - safe(stock.interestBearingDebt);
+  const netFinancialAssets   = safe(stock.cash) - ibd;
   const netFinancialAssetsPS = toPS(netFinancialAssets);
 
+  // 営業利益（百万円）
   const opProfit = safe(stock.operatingProfit) > 0
     ? safe(stock.operatingProfit)
     : safe(stock.eps) * sharesK / 1_000;
 
   const nopat0 = opProfit * (1 - taxRate);
-  const rei0   = nopat0 - netOperatingAssets * r;
-  const g      = Math.min(Math.max(safe(stock.salesGrowthRate) || 0, 0), 0.20);
+  // 残余事業利益 = NOPAT - 正味営業資産 × 要求利回り
+  const rei0 = nopat0 - netOperatingAssets * r;
+
+  // 成長率（売上高成長率、上限20%）
+  const g = Math.min(Math.max(safe(stock.salesGrowthRate) || 0, 0), 0.20);
 
   let pvSum = 0;
   const reiByYear: { year: number; roe: number; rei: number; pv: number }[] = [];
@@ -199,20 +197,23 @@ export function calcValuation(
     reiByYear.push({ year: i + 1, roe: safe(stock.roe), rei: Math.round(rei_ps), pv: Math.round(pv) });
   }
 
-  const terminalREI_ps = toPS(rei0 * Math.pow(1 + g, forecastYears));
-  const terminalPV = r > terminalGrowthRate
-    ? (terminalREI_ps / (r - terminalGrowthRate)) / Math.pow(1 + r, forecastYears)
-    : 0;
+  // 終端価値: 予測期間後は残余事業利益がゼロに収束すると仮定（保守的）
+  // terminalGrowthRate > 0 の場合のみ Gordon Growth Model を適用、上限は pvSum の2倍
+  let terminalPV = 0;
+  if (terminalGrowthRate > 0 && r > terminalGrowthRate) {
+    const terminalREI_ps = toPS(rei0 * Math.pow(1 + g, forecastYears));
+    const raw = (terminalREI_ps / (r - terminalGrowthRate)) / Math.pow(1 + r, forecastYears);
+    // 終端価値は予測期間PV合計の2倍を上限とする（暴発防止）
+    terminalPV = Math.max(0, Math.min(raw, Math.abs(pvSum) * 2));
+  }
   pvSum += terminalPV;
 
   const theoretical = netOperatingAssetsPS + netFinancialAssetsPS + pvSum;
-  const updownPct   = safe(stock.price) > 0
-    ? ((theoretical / safe(stock.price) - 1) * 100).toFixed(1)
-    : "0.0";
+  const updownPct = safe(stock.price) > 0
+    ? ((theoretical / safe(stock.price) - 1) * 100).toFixed(1) : "0.0";
 
   return {
     ...stock,
-    // RIM
     netOperatingAssetsPS: Math.round(netOperatingAssetsPS),
     netFinancialAssetsPS: Math.round(netFinancialAssetsPS),
     pvREI:       Math.round(pvSum),
@@ -220,13 +221,11 @@ export function calcValuation(
     theoretical: Math.round(theoretical),
     updownPct,
     reiByYear,
-    // はっしゃん式
     nikkeiTheoretical: Math.round(nikkeiTheoretical),
     nikkeiUpdownPct,
     nikkeiBusinessValue: Math.round(nikkeiBusinessValue),
     nikkeiAssetValue:    Math.round(nikkeiAssetValue),
     nikkeiMarketRisk:    Math.round(nikkeiMarketRisk),
-    // 共通
     pbr,
     roa,
     assetAdjRatio,
