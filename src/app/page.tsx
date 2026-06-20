@@ -253,8 +253,8 @@ export default function Home() {
   const [loadingMore, setLoadingMore]   = useState(false);
   const [loadingPrices, setLoadingPrices] = useState(false);
   const [fetchedAt, setFetchedAt]       = useState<string | null>(null);
-  const [forecastYears, setForecastYears] = useState(10);
-  const [terminalG, setTerminalG]       = useState(0.02);
+  const [forecastYears, setForecastYears] = useState(5);
+  const [terminalG, setTerminalG]       = useState(0.01);
   const [payoutRatio, setPayoutRatio]   = useState(0.4);
   const [ibdK, setIbdK]                 = useState(0.6);
   const [selected, setSelected]         = useState<string | null>(null);
