@@ -137,7 +137,8 @@ export async function GET(req: NextRequest) {
         forecastOperatingProfit:  nxfOpRaw > 0 ? nxfOpRaw : opRaw,
         salesGrowthRate,
         shares:                   sharesThousand,
-        requiredReturn:           toNum(s.required_return) || 0.05,
+        // 0の場合は「ユーザー未設定」を意味し、calcValuation側で動的rが使われる
+        requiredReturn:           toNum(s.required_return) || 0,
         lastUpdated:              s.updated_at,
       };
     });
