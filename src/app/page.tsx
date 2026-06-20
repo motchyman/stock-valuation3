@@ -233,7 +233,7 @@ function DetailPanel({ s, nikkeiRef, forecastYears, terminalG, ibdK, isMobile, o
             </table>
             <div style={{ margin:"14px 0", padding:10, background:C.bg, borderRadius:6, fontSize:11, color:C.muted, lineHeight:2 }}>
               <div style={{ color:C.accent, marginBottom:2, fontSize:10 }}>計算前提</div>
-              r(要求利回り): <strong style={{ color:C.text }}>{(s.requiredReturn*100).toFixed(1)}%</strong>　
+              r(要求利回り): <strong style={{ color:C.text }}>{(s.effectiveR*100).toFixed(1)}%</strong>　
               終端成長率: <strong style={{ color:C.text }}>{(terminalG*100).toFixed(1)}%</strong><br/>
               予測期間: <strong style={{ color:C.text }}>{forecastYears}年</strong>
             </div>
@@ -351,7 +351,7 @@ export default function Home() {
       const data = await res.json();
       const merged: StockData[] = (data.stocks ?? [])
         .filter((s: StockData & { error?: string }) => !s.error)
-        .map((s: StockData) => ({ ...s, requiredReturn: s.requiredReturn ?? 0.05 }));
+        .map((s: StockData) => ({ ...s, requiredReturn: s.requiredReturn ?? 0 }));
       if (merged.length === 0 && !search) {
         setApiError(true); setStocks(FALLBACK);
       } else {
@@ -596,13 +596,13 @@ export default function Home() {
               <span onClick={e => { e.stopPropagation(); setEditRR(p => ({ ...p, [s.code]:true })); }}>
                 {isEdit ? (
                   <input autoFocus type="number" min={1} max={30} step={0.5}
-                    defaultValue={(s.requiredReturn*100).toFixed(1)}
+                    defaultValue={(s.effectiveR*100).toFixed(1)}
                     style={{ width:56, background:"#1e3a6e", border:`1px solid ${C.accent}`, color:C.bright, borderRadius:6, padding:"2px 6px", fontSize:12 }}
                     onBlur={e => { updateRR(s.code, e.target.value); setEditRR(p => ({ ...p, [s.code]:false })); }}
                     onKeyDown={e => { if(e.key==="Enter"){ updateRR(s.code,(e.target as HTMLInputElement).value); setEditRR(p=>({...p,[s.code]:false})); }}}
                   />
                 ) : (
-                  <strong style={{ color:"#fbbf24", borderBottom:"1px dashed #4a5568", cursor:"pointer", fontSize:13 }}>r={( s.requiredReturn*100).toFixed(1)}%</strong>
+                  <strong style={{ color:"#fbbf24", borderBottom:"1px dashed #4a5568", cursor:"pointer", fontSize:13 }}>r={( s.effectiveR*100).toFixed(1)}%</strong>
                 )}
               </span>
               <span style={{ marginLeft:"auto", fontSize:11, color:C.muted }}>詳細 →</span>
