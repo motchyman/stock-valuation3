@@ -51,7 +51,10 @@ export async function GET(req: NextRequest) {
       const nxfOpRaw    = toNum(s.nxf_op_raw)     / 1_000_000;
       const salesRaw    = toNum(s.sales_raw)      / 1_000_000;
       const nxfSalesRaw = toNum(s.nxf_sales_raw)  / 1_000_000;
-      const ibdRaw      = toNum(s.ibd_raw)        / 1_000_000;
+
+      // ibd_raw: NULL（未取得）/ -1（有報なし）/ 0（無借金確認済み）/ 正の値 を区別
+      const ibdRawValue = s.ibd_raw;
+      const ibdRaw       = toNum(s.ibd_raw) / 1_000_000;
 
       const shOutRaw = toNum(s.sh_out_raw) / 1_000;
       const trShRaw  = toNum(s.tr_sh_raw)  / 1_000;
@@ -75,9 +78,16 @@ export async function GET(req: NextRequest) {
         : 0;
 
       const totalLiabilities = taRaw - eqRaw;
-      const interestBearingDebt = ibdRaw > 0
-        ? ibdRaw
-        : Math.max(totalLiabilities - cashRaw, 0) * 0.6;
+
+      // 有利子負債:
+      //   - ibd_rawがNULL（EDINET未処理）→ 推計値（総負債-現金）×0.6
+      //   - ibd_raw = -1（EDINETで有報が見つからなかった）→ 0として扱う
+      //   - ibd_raw = 0（EDINETで無借金と確認済み）→ そのまま0
+      //   - ibd_raw > 0（EDINETで正確に取得済み）→ そのまま使用
+      const interestBearingDebt =
+        (ibdRawValue === null || ibdRawValue === undefined)
+          ? Math.max(totalLiabilities - cashRaw, 0) * 0.6
+          : Math.max(ibdRaw, 0);
 
       const operatingAssets      = taRaw - cashRaw;
       const operatingLiabilities = totalLiabilities - interestBearingDebt;
