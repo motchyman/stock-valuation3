@@ -1,0 +1,157 @@
+name: Repair Stock Names
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  repair-names:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Run name repair batch
+        env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          node << 'EOF'
+          const https = require('https');
+
+          const JQ_KEY = process.env.JQUANTS_API_KEY;
+          const SB_URL = process.env.SUPABASE_URL;
+          const SB_KEY = process.env.SUPABASE_ANON_KEY;
+          const JQ_BASE = 'https://api.jquants.com/v2';
+
+          const fetch = (url, opts = {}) => new Promise((resolve, reject) => {
+            const u = new URL(url);
+            const req = https.request({
+              hostname: u.hostname, path: u.pathname + u.search,
+              method: opts.method || 'GET',
+              headers: opts.headers || {},
+              timeout: opts.timeout || 30000,
+            }, res => {
+              let data = [];
+              res.on('data', c => data.push(c));
+              res.on('end', () => resolve({
+                ok: res.statusCode < 300,
+                status: res.statusCode,
+                json: () => Promise.resolve(JSON.parse(Buffer.concat(data).toString())),
+              }));
+            });
+            req.on('error', reject);
+            req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+            if (opts.body) req.write(opts.body);
+            req.end();
+          });
+
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+          function getRecentBusinessDay(daysAgo) {
+            const d = new Date();
+            let count = 0;
+            while (count < daysAgo) {
+              d.setDate(d.getDate() - 1);
+              if (d.getDay() !== 0 && d.getDay() !== 6) count++;
+            }
+            return d.toISOString().slice(0, 10).replace(/-/g, '');
+          }
+
+          // ── J-Quantsから全銘柄マスタ（code-name-sector）を取得 ──────────
+          async function fetchJQuantsMaster() {
+            const masterMap = new Map();
+            for (let daysAgo = 1; daysAgo <= 30; daysAgo++) {
+              const date = getRecentBusinessDay(daysAgo);
+              const url = `${JQ_BASE}/equities/master?date=${date}`;
+              const res = await fetch(url, { headers: { 'x-api-key': JQ_KEY } });
+
+              if (res.status === 429) { await sleep(60000); continue; }
+              if (!res.ok) { await sleep(1000); continue; }
+
+              const json = await res.json();
+              const list = json?.data ?? json?.info ?? [];
+
+              for (const item of list) {
+                const code = String(item.Code ?? '').slice(0, 4);
+                const name = String(item.CompanyName ?? '');
+                const sector = String(item.Sector33CodeName ?? '');
+                if (code && name) masterMap.set(code, { name, sector });
+              }
+
+              if (masterMap.size > 0) {
+                console.log(`銘柄マスタ取得完了: date=${date}, ${masterMap.size}銘柄`);
+                break;
+              }
+              await sleep(1000);
+            }
+            return masterMap;
+          }
+
+          async function getMissingNameCodes() {
+            const url = `${SB_URL}/rest/v1/stocks?select=code&or=(name.is.null,name.eq.)&order=code.asc&limit=5000`;
+            const res = await fetch(url, {
+              headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
+            });
+            if (!res.ok) return [];
+            const data = await res.json();
+            return data.map(d => d.code);
+          }
+
+          async function patchName(code, name, sector) {
+            const res = await fetch(`${SB_URL}/rest/v1/stocks?code=eq.${code}`, {
+              method: 'PATCH',
+              headers: {
+                apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
+                'Content-Type': 'application/json', Prefer: 'return=minimal',
+              },
+              body: JSON.stringify({ name, sector }),
+            });
+            return res.ok;
+          }
+
+          (async () => {
+            console.log('=== J-Quants銘柄マスタ取得開始 ===');
+            const jqMaster = await fetchJQuantsMaster();
+            if (jqMaster.size === 0) {
+              console.log('エラー: J-Quants銘柄マスタの取得に失敗しました');
+              return;
+            }
+
+            console.log('=== Supabaseでname欠損銘柄を確認 ===');
+            const missingCodes = await getMissingNameCodes();
+            console.log(`name欠損銘柄数: ${missingCodes.length}`);
+
+            if (missingCodes.length === 0) {
+              console.log('復旧対象なし。完了。');
+              return;
+            }
+
+            let updated = 0;
+            let notFound = 0;
+            const notFoundCodes = [];
+
+            console.log('=== 復旧処理開始 ===');
+            for (const code of missingCodes) {
+              const m = jqMaster.get(code);
+              if (!m) {
+                notFound++;
+                notFoundCodes.push(code);
+                continue;
+              }
+              const ok = await patchName(code, m.name, m.sector);
+              if (ok) {
+                updated++;
+                if (updated % 100 === 0) console.log(`進捗: ${updated}件更新済み`);
+              }
+              await sleep(50);
+            }
+
+            console.log(`=== 完了 ===`);
+            console.log(`J-Quantsマスタ件数: ${jqMaster.size}`);
+            console.log(`name欠損だった件数: ${missingCodes.length}`);
+            console.log(`復旧成功: ${updated}件`);
+            console.log(`J-Quantsにも見つからず: ${notFound}件`);
+            if (notFoundCodes.length > 0) {
+              console.log(`見つからなかったコード（先頭30件）: ${notFoundCodes.slice(0, 30).join(', ')}`);
+            }
+          })();
+          EOF
