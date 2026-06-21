@@ -50,15 +50,17 @@ jobs:
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
           // ── 再処理対象: null（未取得）または -1（前回取得失敗）の銘柄 ──────────
-          async function getPendingCodes() {
-            const url = `${SB_URL}/rest/v1/stocks?select=code&or=(op_assets_raw.is.null,op_assets_raw.eq.-1)&order=code.asc&limit=5000`;
-            const res = await fetch(url, {
-              headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
-            });
-            if (!res.ok) return new Set();
-            const data = await res.json();
-            return new Set(data.map(d => d.code));
-          }
+async function getPendingCodes() {
+  // 内訳タグ・フォールバック実装の反映のため、全銘柄を再処理対象とする
+  const url = `${SB_URL}/rest/v1/stocks?select=code&order=code.asc&limit=5000`;
+  const res = await fetch(url, {
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
+  });
+  if (!res.ok) return new Set();
+  const data = await res.json();
+  return new Set(data.map(d => d.code));
+}
+
 
           async function getDocsForDate(dateStr) {
             try {
