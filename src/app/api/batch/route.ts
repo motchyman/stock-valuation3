@@ -29,14 +29,15 @@ function getBusinessDay(daysAgo: number): string {
   return d.toISOString().slice(0, 10).replace(/-/g, "");
 }
 
+// 全銘柄を確実に取得（Rangeヘッダーによる2000件制限を撤廃）
 async function fetchMaster() {
   const res = await fetch(
-    `${SB_URL}/rest/v1/stocks?select=code,name,sector&order=code`,
+    `${SB_URL}/rest/v1/stocks?select=code,name,sector&order=code&limit=5000`,
     {
       headers: {
         "apikey":        SB_KEY,
         "Authorization": `Bearer ${SB_KEY}`,
-        "Range":         "0-1999",
+        "Prefer":        "count=exact",
       },
     }
   );
@@ -266,6 +267,12 @@ export async function GET(req: NextRequest) {
 
   try {
     for (const stock of targets) {
+      // name/sectorが取得できていない銘柄は誤って空上書きしないようスキップ
+      if (!stock.name) {
+        finsFailures.push({ code: stock.code, reason: "name missing in master, skipped to avoid overwrite" });
+        continue;
+      }
+
       await sleep(13000); // 1分5リクエスト制限 → 13秒/リクエスト
       const finsResult = await fetchFins(stock.code);
       if (!finsResult.ok) {
