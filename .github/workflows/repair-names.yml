@@ -68,12 +68,12 @@ jobs:
               if (!res.ok) { await sleep(1000); continue; }
 
               const json = await res.json();
-              const list = json?.data ?? json?.info ?? [];
+              const list = json?.data ?? [];
 
               for (const item of list) {
                 const code = String(item.Code ?? '').slice(0, 4);
-                const name = String(item.CompanyName ?? '');
-                const sector = String(item.Sector33CodeName ?? '');
+                const name = String(item.CoName ?? '');
+                const sector = String(item.S33Nm ?? '');
                 if (code && name) masterMap.set(code, { name, sector });
               }
 
