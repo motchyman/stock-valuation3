@@ -53,7 +53,7 @@ jobs:
 
           // ── 全銘柄を対象に再処理（営業資産の精度向上のため） ──────────
           async function getPendingCodes() {
-            const url = `${SB_URL}/rest/v1/stocks?select=code&op_assets_raw=is.not.null&order=code.asc&limit=5000`;
+            const url = `${SB_URL}/rest/v1/stocks?select=code&op_assets_raw=not.is.null&order=code.asc&limit=5000`;
             const res = await fetch(url, {
               headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
             });
