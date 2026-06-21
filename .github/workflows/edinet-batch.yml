@@ -1,3 +1,5 @@
+name: EDINET Init Batch
+
 on:
   workflow_dispatch: {}
   schedule:
@@ -49,18 +51,16 @@ jobs:
 
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-          // ── 再処理対象: null（未取得）または -1（前回取得失敗）の銘柄 ──────────
-async function getPendingCodes() {
-  // 内訳タグ・フォールバック実装の反映のため、全銘柄を再処理対象とする
-  const url = `${SB_URL}/rest/v1/stocks?select=code&order=code.asc&limit=5000`;
-  const res = await fetch(url, {
-    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
-  });
-  if (!res.ok) return new Set();
-  const data = await res.json();
-  return new Set(data.map(d => d.code));
-}
-
+          // ── 内訳タグ・フォールバック実装の反映のため、全銘柄を再処理対象とする ──
+          async function getPendingCodes() {
+            const url = `${SB_URL}/rest/v1/stocks?select=code&order=code.asc&limit=5000`;
+            const res = await fetch(url, {
+              headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
+            });
+            if (!res.ok) return new Set();
+            const data = await res.json();
+            return new Set(data.map(d => d.code));
+          }
 
           async function getDocsForDate(dateStr) {
             try {
@@ -257,11 +257,7 @@ async function getPendingCodes() {
             }
 
             if (pending.size > 0) {
-              console.log(`=== 残り${pending.size}銘柄は有報未発見のため -1 でマーク ===`);
-              for (const code of pending) {
-                await save(code, -1, '', -1, -1);
-                await sleep(200);
-              }
+              console.log(`=== 残り${pending.size}銘柄は未処理のため次回実行で継続します ===`);
             }
 
             console.log(`完了！取得成功:${totalOk}件`);
