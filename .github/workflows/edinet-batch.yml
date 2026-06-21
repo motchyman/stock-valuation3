@@ -51,9 +51,9 @@ jobs:
 
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-          // ── 営業資産/負債が未取得の銘柄を取得 ──────────────────────────
+          // ── 全銘柄を対象に再処理（営業資産の精度向上のため） ──────────
           async function getPendingCodes() {
-            const url = `${SB_URL}/rest/v1/stocks?select=code&op_assets_raw=is.null&order=code.asc&limit=5000`;
+            const url = `${SB_URL}/rest/v1/stocks?select=code&op_assets_raw=is.not.null&order=code.asc&limit=5000`;
             const res = await fetch(url, {
               headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
             });
@@ -74,21 +74,38 @@ jobs:
             } catch { return []; }
           }
 
-          // ── XBRLから有利子負債・営業資産・営業負債を一括抽出 ──────────────
+          // ── XBRLタグ定義 ──────────────────────────────────────────────
           const IBD_TAGS = [
             'ShortTermLoansPayable', 'CurrentPortionOfLongTermLoansPayable',
             'ShortTermBondsPayable', 'BondsPayable', 'LongTermLoansPayable',
             'BorrowingsCurrent', 'BorrowingsNoncurrent',
           ];
-          // 営業資産: 売上債権・棚卸資産・有形固定資産・無形固定資産
-          const OP_ASSET_TAGS = [
+
+          // 棚卸資産: 合計タグ優先、なければ内訳を合算
+          const INVENTORY_TOTAL_TAGS = ['Inventories'];
+          const INVENTORY_BREAKDOWN_TAGS = [
+            'MerchandiseAndFinishedGoods', 'Merchandise', 'FinishedGoods',
+            'WorkInProcess', 'RawMaterialsAndSupplies', 'RawMaterials', 'Supplies',
+          ];
+
+          // 有形固定資産: 合計タグ優先、なければ内訳を合算
+          const PPE_TOTAL_TAGS = ['PropertyPlantAndEquipment'];
+          const PPE_BREAKDOWN_TAGS = [
+            'BuildingsAndStructures', 'MachineryEquipmentAndVehicles',
+            'Land', 'ConstructionInProgress', 'ToolsFurnitureAndFixtures',
+            'OtherPropertyPlantAndEquipment',
+          ];
+
+          // 売上債権
+          const RECEIVABLE_TAGS = [
             'NotesAndAccountsReceivableTrade',
             'NotesAndAccountsReceivableTradeAndContractAssets',
             'AccountsReceivableTrade',
-            'Inventories',
-            'PropertyPlantAndEquipment',
-            'IntangibleAssets',
           ];
+
+          // 無形固定資産
+          const INTANGIBLE_TAGS = ['IntangibleAssets'];
+
           // 営業負債: 仕入債務・前受金・未払費用
           const OP_LIAB_TAGS = [
             'NotesAndAccountsPayableTrade',
@@ -97,21 +114,33 @@ jobs:
             'AccruedExpenses',
           ];
 
+          function extractTagValue(xbrl, tag, contexts) {
+            const re = new RegExp(`<[^:]+:${tag}[^>]*contextRef="([^"]*)"[^>]*>\\s*([\\d.]+)\\s*</[^:]+:${tag}>`, 'g');
+            let best = null, bestPri = 999, m;
+            while ((m = re.exec(xbrl)) !== null) {
+              const pri = contexts.findIndex(c => m[1].includes(c));
+              const val = parseFloat(m[2]);
+              if (val > 0 && pri < bestPri) { best = val; bestPri = pri; }
+            }
+            return best;
+          }
+
           function extractTagSum(xbrl, tags, contexts) {
             let total = 0;
             const seen = new Set();
             for (const tag of tags) {
               if (seen.has(tag)) continue;
-              const re = new RegExp(`<[^:]+:${tag}[^>]*contextRef="([^"]*)"[^>]*>\\s*([\\d.]+)\\s*</[^:]+:${tag}>`, 'g');
-              let best = null, bestPri = 999, m;
-              while ((m = re.exec(xbrl)) !== null) {
-                const pri = contexts.findIndex(c => m[1].includes(c));
-                const val = parseFloat(m[2]);
-                if (val > 0 && pri < bestPri) { best = val; bestPri = pri; }
-              }
-              if (best !== null) { total += best; seen.add(tag); }
+              const val = extractTagValue(xbrl, tag, contexts);
+              if (val !== null) { total += val; seen.add(tag); }
             }
             return total;
+          }
+
+          // 合計タグ優先、見つからなければ内訳タグを合算するフォールバック付き抽出
+          function extractWithFallback(xbrl, totalTags, breakdownTags, contexts) {
+            const totalVal = extractTagSum(xbrl, totalTags, contexts);
+            if (totalVal > 0) return totalVal;
+            return extractTagSum(xbrl, breakdownTags, contexts);
           }
 
           async function getBalanceSheetData(docId) {
@@ -135,8 +164,14 @@ jobs:
 
               const CONTEXTS = ['ConsolidatedMember', 'CurrentYearInstant', 'FilingDateInstant'];
 
-              const ibd     = extractTagSum(xbrl, IBD_TAGS, CONTEXTS);
-              const opAsset = extractTagSum(xbrl, OP_ASSET_TAGS, CONTEXTS);
+              const ibd = extractTagSum(xbrl, IBD_TAGS, CONTEXTS);
+
+              const inventory   = extractWithFallback(xbrl, INVENTORY_TOTAL_TAGS, INVENTORY_BREAKDOWN_TAGS, CONTEXTS);
+              const ppe         = extractWithFallback(xbrl, PPE_TOTAL_TAGS, PPE_BREAKDOWN_TAGS, CONTEXTS);
+              const receivable  = extractTagSum(xbrl, RECEIVABLE_TAGS, CONTEXTS);
+              const intangible  = extractTagSum(xbrl, INTANGIBLE_TAGS, CONTEXTS);
+
+              const opAsset = inventory + ppe + receivable + intangible;
               const opLiab  = extractTagSum(xbrl, OP_LIAB_TAGS, CONTEXTS);
 
               return { ibd, opAsset, opLiab };
@@ -161,7 +196,7 @@ jobs:
 
           (async () => {
             const pending = await getPendingCodes();
-            console.log(`未処理銘柄数: ${pending.size}`);
+            console.log(`再処理対象銘柄数: ${pending.size}`);
             if (pending.size === 0) {
               console.log('完了！処理対象なし');
               return;
