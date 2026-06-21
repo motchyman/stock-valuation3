@@ -1,5 +1,3 @@
-name: EDINET Init Batch
-
 on:
   workflow_dispatch: {}
   schedule:
@@ -51,9 +49,9 @@ jobs:
 
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-          // ── 全銘柄を対象に再処理（営業資産の精度向上のため） ──────────
+          // ── 再処理対象: null（未取得）または -1（前回取得失敗）の銘柄 ──────────
           async function getPendingCodes() {
-            const url = `${SB_URL}/rest/v1/stocks?select=code&op_assets_raw=not.is.null&order=code.asc&limit=5000`;
+            const url = `${SB_URL}/rest/v1/stocks?select=code&or=(op_assets_raw.is.null,op_assets_raw.eq.-1)&order=code.asc&limit=5000`;
             const res = await fetch(url, {
               headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }
             });
